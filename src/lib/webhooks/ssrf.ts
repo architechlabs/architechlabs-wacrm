@@ -18,7 +18,7 @@
 // doesn't expose; documented as a residual risk.
 // ============================================================
 
-import { lookup } from 'node:dns/promises';
+import { resolve4, resolve6 } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 /** True for loopback / private / link-local / reserved IPv4 or IPv6. */
@@ -39,7 +39,12 @@ export function isPrivateOrReservedIp(ip: string): boolean {
 
   const v6 = ip.toLowerCase().replace(/^\[|\]$/g, '');
   if (v6 === '::1' || v6 === '::') return true; // loopback / unspecified
-  if (v6.startsWith('fe8') || v6.startsWith('fe9') || v6.startsWith('fea') || v6.startsWith('feb'))
+  if (
+    v6.startsWith('fe8') ||
+    v6.startsWith('fe9') ||
+    v6.startsWith('fea') ||
+    v6.startsWith('feb')
+  )
     return true; // fe80::/10 link-local
   if (v6.startsWith('fc') || v6.startsWith('fd')) return true; // fc00::/7 ULA
   const mapped = v6.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
@@ -73,11 +78,11 @@ export async function isDeliverableUrl(rawUrl: string): Promise<boolean> {
     return false;
   }
 
-  try {
-    const results = await lookup(host, { all: true });
-    if (results.length === 0) return false;
-    return results.every((r) => !isPrivateOrReservedIp(r.address));
-  } catch {
-    return false; // unresolvable → not deliverable
-  }
+  const results = await Promise.allSettled([resolve4(host), resolve6(host)]);
+  const addresses = results.flatMap((result) =>
+    result.status === 'fulfilled' ? result.value : []
+  );
+
+  if (addresses.length === 0) return false;
+  return addresses.every((address) => !isPrivateOrReservedIp(address));
 }

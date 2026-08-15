@@ -39,6 +39,12 @@ yarn-error.log*
 # Supabase CLI linked-project cache
 /supabase/.temp/
 
+# OpenNext / Cloudflare Workers generated and local-only files
+.open-next/
+.dev.vars*
+cloudflare-env.d.ts
+.wrangler/
+
 # vercel
 .vercel
 
