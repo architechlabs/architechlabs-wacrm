@@ -1,4 +1,6 @@
 -- ============================================================
+
+SET search_path = public, extensions;
 -- Conversational Flows: stateful, branching WhatsApp chatbot.
 --
 -- What this migration adds:

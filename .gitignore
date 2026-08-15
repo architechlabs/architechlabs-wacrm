@@ -36,6 +36,9 @@ yarn-error.log*
 !.env.local.example
 !.env.example
 
+# Supabase CLI linked-project cache
+/supabase/.temp/
+
 # vercel
 .vercel
 

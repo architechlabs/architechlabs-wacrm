@@ -1,4 +1,6 @@
 -- ============================================================
+
+SET search_path = public, extensions;
 -- 006_automations.sql — Automations feature
 --
 -- Idempotent migration — safe to run multiple times.

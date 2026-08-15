@@ -7,6 +7,10 @@
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- Supabase CLI login roles do not always inherit the project's
+-- `extensions` search path while replaying migrations.
+SET search_path = public, extensions;
+
 -- ============================================================
 -- PROFILES
 -- ============================================================

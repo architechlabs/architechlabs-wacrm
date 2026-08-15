@@ -1,4 +1,6 @@
 -- ============================================================
+
+SET search_path = public, extensions;
 -- 017_account_sharing.sql — Multi-user accounts (foundation)
 --
 -- Turns wacrm from single-tenant-per-user into multi-tenant-per-

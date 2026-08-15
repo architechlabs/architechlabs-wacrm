@@ -1,4 +1,6 @@
 -- ============================================================
+
+SET search_path = public, extensions;
 -- 035_interactive_messages.sql
 --
 -- Full support for WhatsApp interactive messages (reply buttons +

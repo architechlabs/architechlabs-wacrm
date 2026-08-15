@@ -1,4 +1,6 @@
 -- ============================================================
+
+SET search_path = public, extensions;
 -- NOTIFICATIONS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS notifications (

@@ -1,4 +1,6 @@
 -- ============================================================
+
+SET search_path = public, extensions;
 -- Chat actions: reply linkage + reactions
 --
 -- Adds two things the chat UI now needs:
