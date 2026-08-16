@@ -22,10 +22,11 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: "wacrm",
-    template: "%s — wacrm",
+    default: "Architech Labs — WhatsApp Desk",
+    template: "%s — Architech Labs",
   },
-  description: "Self-hostable CRM template for WhatsApp.",
+  applicationName: "Architech Labs WhatsApp Desk",
+  description: "Architech Labs workspace for WhatsApp customer conversations.",
   robots: {
     index: false,
     follow: false,
@@ -41,7 +42,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#020617",
+  themeColor: "#08070d",
   colorScheme: "dark light",
 };
 
