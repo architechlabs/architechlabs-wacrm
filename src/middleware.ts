@@ -1,11 +1,62 @@
 import { createServerClient } from '@supabase/ssr'
+import type { User } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
+
+const MAX_AUTH_ERROR_MESSAGE_LENGTH = 300
+
+function sanitizeAuthDiagnostic(value: string, maxLength = MAX_AUTH_ERROR_MESSAGE_LENGTH) {
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(
+      /\b(access[_-]?token|refresh[_-]?token|authorization|cookie|api[_-]?key|apikey|secret)\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      '$1$2[redacted]'
+    )
+    .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\b/g, '[redacted-jwt]')
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[redacted-value]')
+    .slice(0, maxLength)
+}
+
+function logAuthError(error: unknown, pathname: string, outcome: 'failed' | 'threw') {
+  const isError = error instanceof Error
+  const errorName = sanitizeAuthDiagnostic(
+    isError ? error.name || 'Error' : 'NonErrorThrown',
+    80
+  )
+  const message = sanitizeAuthDiagnostic(
+    isError
+      ? error.message || 'Authentication validation failed'
+      : typeof error === 'string'
+        ? error
+        : 'Authentication validation failed'
+  )
+
+  // Log only this allowlisted diagnostic shape. In particular, never pass the
+  // Error, request, headers, or cookies themselves to the logger because those
+  // objects can contain credentials or session tokens.
+  console.error(`[middleware] Supabase auth validation ${outcome}`, {
+    errorName,
+    errorType: isError ? 'Error' : typeof error,
+    message,
+    pathname,
+  })
+}
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const projectRef = new URL(supabaseUrl).hostname.split('.')[0]
+  const authCookieName = `sb-${projectRef}-auth-token`
+  const incomingAuthCookieNames = request.cookies.getAll()
+    .map(({ name }) => name)
+    .filter((name) =>
+      name === authCookieName || name.startsWith(`${authCookieName}.`) ||
+      name === `${authCookieName}-code-verifier` ||
+      name.startsWith(`${authCookieName}-code-verifier.`)
+    )
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    supabaseUrl,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
@@ -13,7 +64,7 @@ export async function middleware(request: NextRequest) {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => request.cookies.set(name, value))
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           supabaseResponse = NextResponse.next({ request })
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
@@ -23,7 +74,43 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  const { data: { user } } = await supabase.auth.getUser()
+  let user: User | null = null
+  let authFailed = false
+
+  try {
+    const { data, error } = await supabase.auth.getUser()
+    if (error) {
+      // getUser() also returns AuthSessionMissingError for an ordinary visitor
+      // with no auth cookie. That is the normal logged-out state, not a failed
+      // refresh and not something that should generate an error log.
+      if (incomingAuthCookieNames.length > 0) {
+        authFailed = true
+        logAuthError(error, request.nextUrl.pathname, 'failed')
+      }
+    } else {
+      user = data.user
+    }
+  } catch (error) {
+    authFailed = true
+    logAuthError(error, request.nextUrl.pathname, 'threw')
+  }
+
+  if (authFailed) {
+    // A failed refresh can leave a stale refresh token in the browser. If it
+    // survives this response, every protected request retries the same broken
+    // auth state. Clear only this Supabase project's session / PKCE cookies so
+    // the next request starts logged out instead of looping or escaping the
+    // Worker as an unhandled exception.
+    incomingAuthCookieNames.forEach((name) => {
+      request.cookies.delete(name)
+      supabaseResponse.cookies.set(name, '', {
+        maxAge: 0,
+        path: '/',
+        sameSite: 'lax',
+        secure: request.nextUrl.protocol === 'https:',
+      })
+    })
+  }
 
   // getUser() transparently refreshes an expired access token, which
   // ROTATES the refresh token and writes the new cookies onto
