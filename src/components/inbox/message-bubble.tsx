@@ -40,8 +40,32 @@ interface MessageBubbleProps {
   onOpenMedia?: (messageId: string) => void;
 }
 
-function StatusIcon({ status }: { status: Message["status"] }) {
-  switch (status) {
+export interface FailureStatusLabels {
+  failed: string;
+  metaError: string;
+  notRecorded: string;
+}
+
+export function failureStatusText(
+  message: Message,
+  labels: FailureStatusLabels,
+): string {
+  const lines = [labels.failed];
+  if (message.failure_code !== null && message.failure_code !== undefined) {
+    lines.push(`${labels.metaError} ${message.failure_code}`);
+  }
+  lines.push(message.failure_reason?.trim() || labels.notRecorded);
+  return lines.join("\n");
+}
+
+export function MessageStatusIcon({
+  message,
+  failureLabels,
+}: {
+  message: Message;
+  failureLabels: FailureStatusLabels;
+}) {
+  switch (message.status) {
     case "sending":
       return <Clock className="h-3 w-3 text-muted-foreground" />;
     case "sent":
@@ -50,8 +74,19 @@ function StatusIcon({ status }: { status: Message["status"] }) {
       return <CheckCheck className="h-3 w-3 text-muted-foreground" />;
     case "read":
       return <CheckCheck className="h-3 w-3 text-blue-400" />;
-    case "failed":
-      return <XCircle className="h-3 w-3 text-red-400" />;
+    case "failed": {
+      const failureText = failureStatusText(message, failureLabels);
+      return (
+        <span
+          role="img"
+          aria-label={failureText}
+          title={failureText}
+          className="inline-flex cursor-help"
+        >
+          <XCircle className="h-3 w-3 text-red-400" />
+        </span>
+      );
+    }
     default:
       return null;
   }
@@ -289,7 +324,16 @@ export function MessageBubble({
           >
             {time}
           </span>
-          {isAgent && <StatusIcon status={message.status} />}
+          {isAgent && (
+            <MessageStatusIcon
+              message={message}
+              failureLabels={{
+                failed: t("messageFailed"),
+                metaError: t("metaError"),
+                notRecorded: t("failureNotRecorded"),
+              }}
+            />
+          )}
         </div>
       </div>
       {reactions && reactions.length > 0 && onToggleReaction && (

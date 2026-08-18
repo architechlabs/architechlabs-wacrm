@@ -236,6 +236,10 @@ export interface Message {
   message_id?: string;
   /** Client-generated idempotency key for initiated template sends. */
   client_request_id?: string;
+  /** Numeric Meta error code captured from a failed delivery webhook. */
+  failure_code?: number | null;
+  /** Sanitized failure summary; raw webhook errors are never stored. */
+  failure_reason?: string | null;
   status: MessageStatus;
   created_at: string;
   reply_to_message_id?: string;

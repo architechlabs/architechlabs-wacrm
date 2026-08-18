@@ -274,7 +274,10 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
   } as unknown as Request
 }
 
-function statusRequest() {
+function statusRequest(
+  status = 'delivered',
+  errors?: Array<Record<string, unknown>>,
+) {
   const body = {
     entry: [
       {
@@ -286,9 +289,10 @@ function statusRequest() {
               statuses: [
                 {
                   id: 'wamid.INITIATED',
-                  status: 'delivered',
+                  status,
                   timestamp: '1700000000',
                   recipient_id: '15551230000',
+                  ...(errors ? { errors } : {}),
                 },
               ],
             },
@@ -301,6 +305,15 @@ function statusRequest() {
     text: async () => JSON.stringify(body),
     headers: { get: () => 'sha256=stub' },
   } as unknown as Request
+}
+
+async function runStatusWebhook(
+  status = 'delivered',
+  errors?: Array<Record<string, unknown>>,
+) {
+  const response = await POST(statusRequest(status, errors))
+  for (const callback of h.state.afterCallbacks) await callback()
+  return response
 }
 
 async function runWebhook(message?: Record<string, unknown>) {
@@ -398,24 +411,61 @@ describe('inbound webhook: atomic unread bump (#369)', () => {
 })
 
 describe('initiated-template webhook integration', () => {
-  it('locates the persisted wamid and applies a delivery status update', async () => {
-    const response = await POST(statusRequest())
-    for (const callback of h.state.afterCallbacks) await callback()
+  it.each(['sent', 'delivered', 'read'])(
+    'locates the persisted wamid and applies a %s status update',
+    async (status) => {
+      const response = await runStatusWebhook(status)
+
+      expect(response).toMatchObject({ init: { status: 200 } })
+      expect(h.state.messageStatusUpdates).toContainEqual({ status })
+      expect(h.dispatchWebhookEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        'acc-1',
+        'message.status_updated',
+        {
+          whatsapp_message_id: 'wamid.INITIATED',
+          conversation_id: 'conv-1',
+          status,
+        },
+      )
+    },
+  )
+
+  it('persists only sanitized diagnostics from a failed status', async () => {
+    const response = await runStatusWebhook('failed', [
+      {
+        code: 131026,
+        title: 'Message undeliverable',
+        message: 'Authorization: Bearer secret-token-value',
+        error_data: {
+          details:
+            'Recipient +1 415 555 0123; see https://example.test/private',
+        },
+        href: 'https://example.test/raw-error',
+        raw_payload_marker: 'must-not-be-retained',
+      },
+    ])
 
     expect(response).toMatchObject({ init: { status: 200 } })
-    expect(h.state.messageStatusUpdates).toContainEqual({
-      status: 'delivered',
+    expect(h.state.messageStatusUpdates).toHaveLength(1)
+    expect(h.state.messageStatusUpdates[0]).toMatchObject({
+      status: 'failed',
+      failure_code: 131026,
     })
-    expect(h.dispatchWebhookEvent).toHaveBeenCalledWith(
-      expect.anything(),
-      'acc-1',
-      'message.status_updated',
-      {
-        whatsapp_message_id: 'wamid.INITIATED',
-        conversation_id: 'conv-1',
-        status: 'delivered',
-      }
-    )
+
+    const persisted = JSON.stringify(h.state.messageStatusUpdates[0])
+    expect(persisted).toContain('Message undeliverable')
+    expect(persisted).toContain('[redacted]')
+    expect(persisted).not.toContain('secret-token-value')
+    expect(persisted).not.toContain('415 555 0123')
+    expect(persisted).not.toContain('example.test')
+    expect(persisted).not.toContain('must-not-be-retained')
+  })
+
+  it('keeps failed status handling compatible when Meta sends no errors', async () => {
+    await runStatusWebhook('failed')
+
+    expect(h.state.messageStatusUpdates).toEqual([{ status: 'failed' }])
   })
 
   it('joins a customer reply to the already-existing initiated conversation', async () => {
