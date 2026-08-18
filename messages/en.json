@@ -134,7 +134,9 @@
   },
   "Inbox": {
     "page": {
-      "whatsappNotConnected": "WhatsApp® is not connected. Go to Settings to connect your account."
+      "whatsappNotConnected": "WhatsApp® is not connected. Go to Settings to connect your account.",
+      "conversationOpenFailed": "The message was sent, but the conversation could not be opened.",
+      "conversationStarted": "WhatsApp conversation started."
     },
     "conversationList": {
       "searchPlaceholder": "Search conversations...",
@@ -149,7 +151,8 @@
       "clearAll": "Clear all",
       "noConversations": "No conversations found",
       "noMessagesYet": "No messages yet",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "newMessage": "New Message"
     },
     "messageThread": {
       "backToConversations": "Back to conversations",
@@ -277,7 +280,30 @@
       "finalUrl": "Final URL: {url}",
       "back": "Back",
       "cancel": "Cancel",
-      "send": "Send template"
+      "send": "Send template",
+      "sending": "Sending...",
+      "sendFailed": "The template could not be sent."
+    },
+    "newConversation": {
+      "title": "New WhatsApp Conversation",
+      "description": "Choose one customer and send one approved WhatsApp template.",
+      "existingContact": "Existing contact",
+      "newContact": "New contact",
+      "searchContacts": "Search contacts by name or phone...",
+      "contactsLoadFailed": "Contacts could not be loaded.",
+      "noContacts": "No matching contacts found.",
+      "customerName": "Customer name",
+      "namePlaceholder": "Enter the customer's name",
+      "whatsappNumber": "WhatsApp number",
+      "phoneHint": "Include the country code, for example +91 98765 43210.",
+      "cancel": "Cancel",
+      "chooseTemplate": "Choose template",
+      "selectContactError": "Select an existing contact.",
+      "nameRequired": "Enter the customer's name.",
+      "invalidPhone": "Enter a valid WhatsApp number with country code.",
+      "targetMissing": "Choose the customer again before sending.",
+      "networkError": "The server could not be reached. Retry to safely resume this send.",
+      "sendFailed": "The template could not be sent."
     },
     "sidebar": {
       "contactInfo": "Contact info",

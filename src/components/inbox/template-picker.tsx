@@ -33,7 +33,10 @@ export interface TemplateSendValues {
 interface TemplatePickerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (template: MessageTemplate, values: TemplateSendValues) => void;
+  onSelect: (
+    template: MessageTemplate,
+    values: TemplateSendValues,
+  ) => void | Promise<void>;
 }
 
 function renderBodyPreview(body: string, params: string[]): string {
@@ -87,6 +90,8 @@ export function TemplatePicker({
   const [params, setParams] = useState<string[]>([]);
   const [headerText, setHeaderText] = useState<string>("");
   const [buttonParams, setButtonParams] = useState<Record<number, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -115,6 +120,7 @@ export function TemplatePicker({
         .from("message_templates")
         .select("*")
         .eq("status", "APPROVED")
+        .not("meta_template_id", "is", null)
         .order("created_at", { ascending: false });
 
       if (cancelled) return;
@@ -137,22 +143,37 @@ export function TemplatePicker({
     setParams([]);
     setHeaderText("");
     setButtonParams({});
+    setSubmitError(null);
   }
 
   function handleOpenChange(next: boolean) {
+    if (submitting) return;
     if (!next) resetSelection();
     onOpenChange(next);
   }
 
-  function pickTemplate(template: MessageTemplate) {
+  async function submit(template: MessageTemplate, values: TemplateSendValues) {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onSelect(template, values);
+      resetSelection();
+      onOpenChange(false);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : t("sendFailed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function pickTemplate(template: MessageTemplate) {
     const slots = collectVariableSlots(template);
     const noInputsNeeded =
       slots.bodyVars.length === 0 &&
       slots.headerVarCount === 0 &&
       slots.urlButtonSlots.length === 0;
     if (noInputsNeeded) {
-      onSelect(template, { body: [] });
-      handleOpenChange(false);
+      await submit(template, { body: [] });
       return;
     }
     setSelected(template);
@@ -161,7 +182,7 @@ export function TemplatePicker({
     setButtonParams({});
   }
 
-  function confirm() {
+  async function confirm() {
     if (!selected) return;
     const values: TemplateSendValues = { body: params };
     if (headerText.trim()) values.headerText = headerText.trim();
@@ -170,8 +191,7 @@ export function TemplatePicker({
         Object.entries(buttonParams).map(([k, v]) => [Number(k), v.trim()]),
       );
     }
-    onSelect(selected, values);
-    handleOpenChange(false);
+    await submit(selected, values);
   }
 
   const slots = useMemo(
@@ -221,6 +241,7 @@ export function TemplatePicker({
                   key={t.id}
                   type="button"
                   onClick={() => pickTemplate(t)}
+                  disabled={submitting}
                   className="w-full rounded-md border border-border bg-background/50 p-3 text-left transition-colors hover:border-primary/40 hover:bg-popover"
                 >
                   <div className="flex items-start gap-2">
@@ -313,29 +334,38 @@ export function TemplatePicker({
           </div>
         )}
 
+        {submitError && (
+          <p role="alert" className="text-sm text-destructive">
+            {submitError}
+          </p>
+        )}
+
         <DialogFooter className="gap-2">
           {selected ? (
             <>
               <Button
                 variant="outline"
                 onClick={resetSelection}
+                disabled={submitting}
                 className="border-border text-popover-foreground hover:bg-muted"
               >
                 <ArrowLeft className="h-4 w-4" />
                 {t("back")}
               </Button>
               <Button
-                disabled={!canConfirm}
-                onClick={confirm}
+                disabled={!canConfirm || submitting}
+                onClick={() => void confirm()}
                 className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
-                {t("send")}
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                {submitting ? t("sending") : t("send")}
               </Button>
             </>
           ) : (
             <Button
               variant="outline"
               onClick={() => handleOpenChange(false)}
+              disabled={submitting}
               className="border-border text-popover-foreground hover:bg-muted"
             >
               {t("cancel")}

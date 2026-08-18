@@ -234,6 +234,8 @@ export interface Message {
   media_type?: string | null;
   template_name?: string;
   message_id?: string;
+  /** Client-generated idempotency key for initiated template sends. */
+  client_request_id?: string;
   status: MessageStatus;
   created_at: string;
   reply_to_message_id?: string;

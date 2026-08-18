@@ -195,6 +195,7 @@ vi.mock('@/lib/flows/admin-client', () => ({
 
 interface CapturedWrites {
   message?: Record<string, unknown>;
+  messageUpdate?: Record<string, unknown>;
   conversation?: Record<string, unknown>;
 }
 
@@ -229,6 +230,7 @@ function sendPathDb(
         },
         update: (row: Record<string, unknown>) => {
           if (table === 'conversations') captured.conversation = row;
+          if (table === 'messages') captured.messageUpdate = row;
           return builder;
         },
         maybeSingle: async () => ({ data: null, error: null }),
@@ -344,5 +346,45 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
     // name rather than inventing a body.
     expect(captured.message?.content_text).toBeNull();
     expect(captured.conversation?.last_message_text).toBe('[template]');
+  });
+
+  it('finalizes a reserved idempotency row instead of inserting a second message', async () => {
+    const captured: CapturedWrites = {};
+    const result = await sendMessageToConversation(
+      sendPathDb([TEMPLATE_ROW], captured),
+      'acct-1',
+      {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateParams: ['A123', 'Friday'],
+        reservedMessageId: 'reserved-1',
+      }
+    );
+
+    expect(result.messageId).toBe('msg-1');
+    expect(captured.message).toBeUndefined();
+    expect(captured.messageUpdate).toMatchObject({
+      message_id: 'wamid.1',
+      status: 'sent',
+      content_text: 'Your order A123 ships on Friday',
+    });
+  });
+
+  it('marks a reserved row failed when Meta rejects before accepting it', async () => {
+    sendTemplateMessage.mockRejectedValueOnce(new Error('Meta rejected'));
+    const captured: CapturedWrites = {};
+
+    await expect(
+      sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateParams: ['A123', 'Friday'],
+        reservedMessageId: 'reserved-1',
+      })
+    ).rejects.toMatchObject({ code: 'meta_error', status: 502 });
+
+    expect(captured.messageUpdate).toEqual({ status: 'failed' });
   });
 });

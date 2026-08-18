@@ -27,6 +27,7 @@ interface Script {
   existingConversationByCall?: (({ id: string } | null))[];
   insertedConversationId?: string; // conversations insert -> single
   insertConversationError?: { code?: string } | null;
+  updates?: { table: string; row: Record<string, unknown> }[];
 }
 
 function makeDb(script: Script): SupabaseClient {
@@ -41,8 +42,9 @@ function makeDb(script: Script): SupabaseClient {
       mode = 'insert';
       return builder;
     },
-    update: () => {
+    update: (row: Record<string, unknown>) => {
       mode = 'update';
+      script.updates?.push({ table, row });
       return builder;
     },
     eq: () => builder,
@@ -149,7 +151,29 @@ describe('resolveConversationByPhone', () => {
       conversationId: 'cv1',
       contactId: 'c1',
       contactCreated: false,
+      conversationCreated: false,
     });
+  });
+
+  it('does not overwrite a real existing contact name on a normalized match', async () => {
+    const updates: { table: string; row: Record<string, unknown> }[] = [];
+    const db = makeDb({
+      config: { user_id: 'owner-1' },
+      contactCandidates: [
+        { id: 'c1', phone: '14155550123', name: 'Existing Customer' },
+      ],
+      existingConversation: { id: 'cv1' },
+      updates,
+    });
+
+    await resolveConversationByPhone(
+      db,
+      'acct',
+      '+1 (415) 555-0123',
+      'Typed Again'
+    );
+
+    expect(updates.filter((entry) => entry.table === 'contacts')).toEqual([]);
   });
 
   it('creates contact + conversation when none exist', async () => {
@@ -170,6 +194,7 @@ describe('resolveConversationByPhone', () => {
       conversationId: 'cv2',
       contactId: 'c2',
       contactCreated: true,
+      conversationCreated: true,
     });
   });
 
@@ -205,6 +230,7 @@ describe('resolveConversationByPhone', () => {
       conversationId: 'cv-raced',
       contactId: 'c1',
       contactCreated: false,
+      conversationCreated: false,
     });
   });
 });

@@ -30,6 +30,8 @@ export interface ResolvedConversation {
   contactId: string;
   /** True if this call created the contact (vs matched an existing one). */
   contactCreated: boolean;
+  /** True if this call created the conversation (vs matched an existing one). */
+  conversationCreated: boolean;
 }
 
 /**
@@ -42,7 +44,9 @@ export async function resolveConversationByPhone(
   db: SupabaseClient,
   accountId: string,
   phone: string,
-  name?: string | null
+  name?: string | null,
+  auditUserId?: string | null,
+  preferredContactId?: string | null
 ): Promise<ResolvedConversation> {
   const sanitized = sanitizePhoneForMeta(phone);
   if (!isValidE164(sanitized)) {
@@ -74,24 +78,35 @@ export async function resolveConversationByPhone(
   // POST /api/v1/contacts. resolveAuditUserId throws ContactError only
   // if the owner can't be resolved — remap it to the send error family
   // the callers already handle.
-  let ownerUserId: string;
-  try {
-    ownerUserId = await resolveAuditUserId(db, accountId);
-  } catch (err) {
-    if (err instanceof ContactError) {
-      throw new SendMessageError('db_error', err.message, err.status);
+  let ownerUserId = auditUserId ?? null;
+  if (!ownerUserId) {
+    try {
+      ownerUserId = await resolveAuditUserId(db, accountId);
+    } catch (err) {
+      if (err instanceof ContactError) {
+        throw new SendMessageError('db_error', err.message, err.status);
+      }
+      throw err;
     }
-    throw err;
   }
 
   // ---- contact -------------------------------------------------
   let contactId: string;
   let contactCreated = false;
 
-  const existing = await findExistingContact(db, accountId, sanitized);
+  const existing = preferredContactId
+    ? { id: preferredContactId, name: null as string | null }
+    : await findExistingContact(db, accountId, sanitized);
   if (existing) {
     contactId = existing.id;
-    if (name && name !== existing.name) {
+    const existingName = existing.name?.trim() ?? '';
+    const nameIsPhonePlaceholder =
+      sanitizePhoneForMeta(existingName) === sanitized;
+    if (
+      name &&
+      name !== existing.name &&
+      (!existingName || nameIsPhonePlaceholder)
+    ) {
       await db
         .from('contacts')
         .update({ name, updated_at: new Date().toISOString() })
@@ -142,14 +157,19 @@ export async function resolveConversationByPhone(
   // `.maybeSingle()`, which errors on ≥2 rows: if duplicates predate the
   // unique index (migration 036), we resolve to the canonical survivor
   // instead of falling through and creating yet another (issue #363).
-  const conversationId = await findOrCreateConversationRow(
+  const conversation = await findOrCreateConversationRow(
     db,
     accountId,
     contactId,
     ownerUserId
   );
 
-  return { conversationId, contactId, contactCreated };
+  return {
+    conversationId: conversation.id,
+    contactId,
+    contactCreated,
+    conversationCreated: conversation.created,
+  };
 }
 
 /**
@@ -163,7 +183,7 @@ async function findOrCreateConversationRow(
   accountId: string,
   contactId: string,
   ownerUserId: string
-): Promise<string> {
+): Promise<{ id: string; created: boolean }> {
   const { data: existing, error: findErr } = await db
     .from('conversations')
     .select('id')
@@ -178,7 +198,7 @@ async function findOrCreateConversationRow(
   }
 
   if (existing && existing.length > 0) {
-    return existing[0].id;
+    return { id: existing[0].id, created: false };
   }
 
   const { data: newConv, error: convErr } = await db
@@ -201,12 +221,12 @@ async function findOrCreateConversationRow(
         .order('created_at', { ascending: true })
         .limit(1);
       if (raced && raced.length > 0) {
-        return raced[0].id;
+        return { id: raced[0].id, created: false };
       }
     }
     console.error('[resolve-conversation] conversation create error:', convErr);
     throw new SendMessageError('db_error', 'Failed to create conversation', 500);
   }
 
-  return newConv.id;
+  return { id: newConv.id, created: true };
 }

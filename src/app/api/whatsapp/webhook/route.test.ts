@@ -29,6 +29,14 @@ const h = vi.hoisted(() => ({
     }[],
     /** Error the next storage upload resolves with, if any. */
     storageUploadError: null as { message: string } | null,
+    messageStatusUpdates: [] as Record<string, unknown>[],
+    messageStatusLookup: {
+      conversation_id: 'conv-1',
+      conversations: { account_id: 'acc-1' },
+    } as {
+      conversation_id: string
+      conversations: { account_id: string }
+    } | null,
   },
 }))
 
@@ -82,25 +90,39 @@ vi.mock('@supabase/supabase-js', () => ({
         case 'broadcast_recipients':
           // flagBroadcastReplyIfAny: select().eq().eq().in().order().limit()
           return {
-            select: () => ({
-              eq: () => ({
-                eq: () => ({
-                  in: () => ({
-                    order: () => ({
-                      limit: () =>
-                        Promise.resolve({ data: [], error: null }),
+            select: (columns: string) =>
+              columns === 'id, status'
+                ? {
+                    eq: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({ data: null, error: null }),
                     }),
-                  }),
-                }),
-              }),
-            }),
+                  }
+                : {
+                    eq: () => ({
+                      eq: () => ({
+                        in: () => ({
+                          order: () => ({
+                            limit: () =>
+                              Promise.resolve({ data: [], error: null }),
+                          }),
+                        }),
+                      }),
+                    }),
+                  },
           }
         case 'messages':
           return {
+            update: (row: Record<string, unknown>) => {
+              h.state.messageStatusUpdates.push(row)
+              return {
+                eq: () => Promise.resolve({ error: null }),
+              }
+            },
             // Two different chains land here, told apart by the count
             // option: the prior-message count (head request) and the
             // reply-context parent lookup.
-            select: (_columns: string, options?: { head?: boolean }) =>
+            select: (columns: string, options?: { head?: boolean }) =>
               options?.head
                 ? // priorCustomerMsgCount: select('id',{count,head}).eq().eq()
                   {
@@ -112,6 +134,19 @@ vi.mock('@supabase/supabase-js', () => ({
                         }),
                     }),
                   }
+                : columns ===
+                    'conversation_id, conversations(account_id)'
+                  ? {
+                      eq: () => ({
+                        limit: () => ({
+                          maybeSingle: () =>
+                            Promise.resolve({
+                              data: h.state.messageStatusLookup,
+                              error: null,
+                            }),
+                        }),
+                      }),
+                    }
                 : // lookupInternalIdByMetaId: select('id').eq().eq().maybeSingle()
                   {
                     eq: () => ({
@@ -239,6 +274,35 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
   } as unknown as Request
 }
 
+function statusRequest() {
+  const body = {
+    entry: [
+      {
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              metadata: { phone_number_id: 'pn-1' },
+              statuses: [
+                {
+                  id: 'wamid.INITIATED',
+                  status: 'delivered',
+                  timestamp: '1700000000',
+                  recipient_id: '15551230000',
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  }
+  return {
+    text: async () => JSON.stringify(body),
+    headers: { get: () => 'sha256=stub' },
+  } as unknown as Request
+}
+
 async function runWebhook(message?: Record<string, unknown>) {
   const res = await POST(inboundRequest(message))
   // Drain the after() callback exactly as the runtime would.
@@ -260,6 +324,11 @@ beforeEach(() => {
   h.state.mirrorInboundMedia = true
   h.state.storageUploads = []
   h.state.storageUploadError = null
+  h.state.messageStatusUpdates = []
+  h.state.messageStatusLookup = {
+    conversation_id: 'conv-1',
+    conversations: { account_id: 'acc-1' },
+  }
   mockGetMediaUrl.mockResolvedValue({
     url: 'https://lookaside.fbsbx.com/whatsapp/abc',
     mimeType: 'image/jpeg',
@@ -324,6 +393,44 @@ describe('inbound webhook: atomic unread bump (#369)', () => {
     expect(h.state.rpcCalls[0]).toMatchObject({
       name: 'bump_conversation_on_inbound',
       args: { p_conversation_id: 'conv-1' },
+    })
+  })
+})
+
+describe('initiated-template webhook integration', () => {
+  it('locates the persisted wamid and applies a delivery status update', async () => {
+    const response = await POST(statusRequest())
+    for (const callback of h.state.afterCallbacks) await callback()
+
+    expect(response).toMatchObject({ init: { status: 200 } })
+    expect(h.state.messageStatusUpdates).toContainEqual({
+      status: 'delivered',
+    })
+    expect(h.dispatchWebhookEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      'acc-1',
+      'message.status_updated',
+      {
+        whatsapp_message_id: 'wamid.INITIATED',
+        conversation_id: 'conv-1',
+        status: 'delivered',
+      }
+    )
+  })
+
+  it('joins a customer reply to the already-existing initiated conversation', async () => {
+    h.state.conversation = {
+      id: 'conv-initiated',
+      unread_count: 0,
+      account_id: 'acc-1',
+    }
+
+    await runWebhook()
+
+    expect(h.state.upsertCalls[0].row).toMatchObject({
+      conversation_id: 'conv-initiated',
+      sender_type: 'customer',
+      message_id: 'wamid.TEST1',
     })
   })
 })

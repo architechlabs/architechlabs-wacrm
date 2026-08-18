@@ -88,6 +88,8 @@ export interface SendMessageParams {
   /** Structured payload for `messageType === 'interactive'`. */
   interactivePayload?: InteractiveMessagePayload | null;
   replyToMessageId?: string | null;
+  /** Pre-created idempotency row used by conversation initiation. */
+  reservedMessageId?: string | null;
 }
 
 export interface SendMessageResult {
@@ -201,6 +203,7 @@ export async function sendMessageToConversation(
     templateMessageParams,
     interactivePayload,
     replyToMessageId,
+    reservedMessageId,
   } = params;
 
   if (!conversationId) {
@@ -431,6 +434,13 @@ export async function sendMessageToConversation(
 
     if (lastError) throw lastError;
   } catch (err) {
+    if (reservedMessageId) {
+      await db
+        .from('messages')
+        .update({ status: 'failed' })
+        .eq('id', reservedMessageId)
+        .eq('conversation_id', conversationId);
+    }
     const message =
       err instanceof Error ? err.message : 'Unknown Meta API error';
     console.error('[send-message] Meta send failed for all variants:', message);
@@ -468,9 +478,7 @@ export async function sendMessageToConversation(
           )
         : (contentText ?? null);
 
-  const { data: messageRecord, error: msgError } = await db
-    .from('messages')
-    .insert({
+  const messagePayload = {
       conversation_id: conversationId,
       sender_type: 'agent',
       content_type: messageType,
@@ -482,15 +490,44 @@ export async function sendMessageToConversation(
       message_id: waMessageId,
       status: 'sent',
       reply_to_message_id: replyToMessageId || null,
-    })
-    .select()
-    .single();
+  };
 
-  if (msgError) {
-    console.error('[send-message] error inserting sent message:', msgError);
+  const persistence = reservedMessageId
+    ? db
+        .from('messages')
+        .update(messagePayload)
+        .eq('id', reservedMessageId)
+        .eq('conversation_id', conversationId)
+        .select()
+        .single()
+    : db.from('messages').insert(messagePayload).select().single();
+
+  let { data: messageRecord, error: msgError } = await persistence;
+
+  // Meta has accepted the message at this point. If a user-scoped client
+  // cannot finalize its own reserved row, retry only that row server-side so
+  // the wamid remains available for delivery-status webhook reconciliation.
+  if ((msgError || !messageRecord) && reservedMessageId) {
+    const fallback = await supabaseAdmin()
+      .from('messages')
+      .update(messagePayload)
+      .eq('id', reservedMessageId)
+      .eq('conversation_id', conversationId)
+      .select()
+      .single();
+    messageRecord = fallback.data;
+    msgError = fallback.error;
+  }
+
+  if (msgError || !messageRecord) {
+    console.error('[send-message] sent-message persistence failed:', {
+      code: msgError?.code ?? 'missing_row',
+      conversationId,
+      reservedMessageId: reservedMessageId ?? undefined,
+    });
     throw new SendMessageError(
       'db_error',
-      `Message sent to Meta but failed to save to DB: ${msgError.message}`,
+      'Message sent to Meta but failed to save safely',
       500
     );
   }

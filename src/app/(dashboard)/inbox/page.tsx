@@ -11,11 +11,13 @@ import {
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
+import { NewConversationDialog } from "@/components/inbox/new-conversation-dialog";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCan } from "@/hooks/use-can";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
@@ -34,6 +36,7 @@ export default function InboxPage() {
 
 function InboxPageInner() {
   const t = useTranslations("Inbox.page");
+  const canSendMessages = useCan("send-messages");
   const router = useRouter();
   const searchParams = useSearchParams();
   /**
@@ -59,6 +62,7 @@ function InboxPageInner() {
    * once on conversationId-change as usual.
    */
   const [resyncToken, setResyncToken] = useState(0);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
 
   /**
    * Whether the desktop contact sidebar (tags / deals / notes) is shown.
@@ -501,6 +505,37 @@ function InboxPageInner() {
     router.replace("/inbox", { scroll: false });
   }, [router]);
 
+  const handleConversationReady = useCallback(
+    async (conversationId: string) => {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("conversations")
+        .select(CONVERSATION_SELECT)
+        .eq("id", conversationId)
+        .single();
+
+      if (error || !data) {
+        toast.error(t("conversationOpenFailed"));
+        setResyncToken((n) => n + 1);
+        return;
+      }
+
+      const conversation = normalizeConversation(data);
+      setConversations((prev) => [
+        conversation,
+        ...prev.filter((item) => item.id !== conversation.id),
+      ]);
+      setActiveConversation(conversation);
+      setActiveContact(conversation.contact ?? null);
+      setMessages([]);
+      autoSelectedForDeepLinkRef.current = conversation.id;
+      router.replace(`/inbox?c=${conversation.id}`, { scroll: false });
+      setResyncToken((n) => n + 1);
+      toast.success(t("conversationStarted"));
+    },
+    [router, t],
+  );
+
 
   const handleMessagesLoaded = useCallback((loaded: Message[]) => {
     setMessages(loaded);
@@ -590,6 +625,9 @@ function InboxPageInner() {
             conversations={conversations}
             onConversationsLoaded={handleConversationsLoaded}
             resyncToken={resyncToken}
+            onNewMessage={
+              canSendMessages ? () => setNewConversationOpen(true) : undefined
+            }
           />
         </div>
 
@@ -636,6 +674,11 @@ function InboxPageInner() {
           </div>
         )}
       </div>
+      <NewConversationDialog
+        open={newConversationOpen}
+        onOpenChange={setNewConversationOpen}
+        onConversationReady={handleConversationReady}
+      />
     </div>
   );
 }
