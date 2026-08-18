@@ -23,6 +23,10 @@ import {
 } from "lucide-react";
 import { extractVariableIndices } from "@/lib/whatsapp/template-validators";
 import { useTranslations } from "next-intl";
+import {
+  isMarketingTemplateCategory,
+  RecipientRetryAcknowledgementRequiredError,
+} from "@/lib/whatsapp/delivery-errors";
 
 export interface TemplateSendValues {
   body: string[];
@@ -30,12 +34,18 @@ export interface TemplateSendValues {
   buttonParams?: Record<number, string>;
 }
 
+export interface TemplateSendOptions {
+  acknowledgeRecipientRestriction: boolean;
+}
+
 interface TemplatePickerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  showMarketingDeliveryNotice?: boolean;
   onSelect: (
     template: MessageTemplate,
     values: TemplateSendValues,
+    options: TemplateSendOptions,
   ) => void | Promise<void>;
 }
 
@@ -81,6 +91,7 @@ export function TemplatePicker({
   open,
   onOpenChange,
   onSelect,
+  showMarketingDeliveryNotice = false,
 }: TemplatePickerProps) {
   const t = useTranslations("Inbox.templatePicker");
 
@@ -92,6 +103,10 @@ export function TemplatePicker({
   const [buttonParams, setButtonParams] = useState<Record<number, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [retryRequest, setRetryRequest] = useState<{
+    template: MessageTemplate;
+    values: TemplateSendValues;
+  } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -144,6 +159,7 @@ export function TemplatePicker({
     setHeaderText("");
     setButtonParams({});
     setSubmitError(null);
+    setRetryRequest(null);
   }
 
   function handleOpenChange(next: boolean) {
@@ -152,15 +168,28 @@ export function TemplatePicker({
     onOpenChange(next);
   }
 
-  async function submit(template: MessageTemplate, values: TemplateSendValues) {
+  async function submit(
+    template: MessageTemplate,
+    values: TemplateSendValues,
+    acknowledgeRecipientRestriction = false,
+  ) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await onSelect(template, values);
+      await onSelect(template, values, {
+        acknowledgeRecipientRestriction,
+      });
       resetSelection();
       onOpenChange(false);
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : t("sendFailed"));
+      if (
+        !acknowledgeRecipientRestriction &&
+        error instanceof RecipientRetryAcknowledgementRequiredError
+      ) {
+        setRetryRequest({ template, values });
+      } else {
+        setSubmitError(error instanceof Error ? error.message : t("sendFailed"));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -172,7 +201,10 @@ export function TemplatePicker({
       slots.bodyVars.length === 0 &&
       slots.headerVarCount === 0 &&
       slots.urlButtonSlots.length === 0;
-    if (noInputsNeeded) {
+    const requiresMarketingConfirmation =
+      showMarketingDeliveryNotice &&
+      isMarketingTemplateCategory(template.category);
+    if (noInputsNeeded && !requiresMarketingConfirmation) {
       await submit(template, { body: [] });
       return;
     }
@@ -206,6 +238,9 @@ export function TemplatePicker({
     slots.urlButtonSlots.every(
       (s) => (buttonParams[s.index] ?? "").trim().length > 0,
     );
+  const showSelectedMarketingNotice =
+    showMarketingDeliveryNotice &&
+    isMarketingTemplateCategory(selected?.category);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -222,7 +257,7 @@ export function TemplatePicker({
           </DialogDescription>
         </DialogHeader>
 
-        {!selected ? (
+        {!retryRequest && (!selected ? (
           <div className="max-h-[60vh] space-y-2 overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-8">
@@ -332,7 +367,7 @@ export function TemplatePicker({
               </div>
             ))}
           </div>
-        )}
+        ))}
 
         {submitError && (
           <p role="alert" className="text-sm text-destructive">
@@ -340,8 +375,53 @@ export function TemplatePicker({
           </p>
         )}
 
+        {retryRequest && (
+          <div
+            role="alert"
+            className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2"
+          >
+            <p className="text-sm text-amber-200">
+              {t("recipientRestrictionRetryWarning")}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t("recipientRestrictionRetryNote")}
+            </p>
+          </div>
+        )}
+
+        {showSelectedMarketingNotice && (
+          <p className="rounded-md border border-border bg-background/50 px-3 py-2 text-xs text-muted-foreground">
+            {t("marketingDeliveryNotice")}
+          </p>
+        )}
+
         <DialogFooter className="gap-2">
-          {selected ? (
+          {retryRequest ? (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => setRetryRequest(null)}
+                disabled={submitting}
+                className="border-border text-popover-foreground hover:bg-muted"
+              >
+                {t("cancelRetry")}
+              </Button>
+              <Button
+                disabled={submitting}
+                onClick={() =>
+                  void submit(
+                    retryRequest.template,
+                    retryRequest.values,
+                    true,
+                  )
+                }
+                className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                {submitting ? t("sending") : t("sendAnyway")}
+              </Button>
+            </>
+          ) : selected ? (
             <>
               <Button
                 variant="outline"

@@ -11,7 +11,15 @@ import type { Message } from "@/types";
 const labels: FailureStatusLabels = {
   failed: "Message failed",
   metaError: "Meta error",
+  metaCode: "Meta code",
   notRecorded: "Detailed error information was not recorded.",
+  restrictionTitle: "Message not delivered",
+  restrictionExplanation:
+    "Meta restricted this marketing message for this recipient.",
+  doNotRetryImmediately: "Do not retry immediately.",
+  recommended: "Recommended:",
+  waitBeforeRetry: "Wait before trying this marketing template again, or",
+  askCustomerFirst: "Ask the customer to message the business first.",
 };
 
 function failedMessage(overrides: Partial<Message> = {}): Message {
@@ -49,6 +57,35 @@ describe("failed message status details", () => {
 
     expect(failureStatusText(message, labels)).toBe(
       "Message failed\nDetailed error information was not recorded.",
+    );
+  });
+
+  it("shows the friendly 131049 guidance and suppresses the raw reason", () => {
+    const message = failedMessage({
+      failure_code: 131049,
+      failure_reason:
+        "This message was not delivered to maintain healthy ecosystem engagement.",
+    });
+    const text = failureStatusText(message, labels);
+    const markup = renderToStaticMarkup(
+      <MessageStatusIcon message={message} failureLabels={labels} />,
+    );
+
+    expect(text).toContain("Message not delivered");
+    expect(text).toContain("Do not retry immediately.");
+    expect(text).toContain("Meta code 131049");
+    expect(text).not.toContain("healthy ecosystem engagement");
+    expect(markup).toContain("Meta code 131049");
+  });
+
+  it("keeps unrelated Meta failure reasons visible", () => {
+    const message = failedMessage({
+      failure_code: 131026,
+      failure_reason: "Message undeliverable",
+    });
+
+    expect(failureStatusText(message, labels)).toContain(
+      "Message undeliverable",
     );
   });
 });

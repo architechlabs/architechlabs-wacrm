@@ -127,6 +127,8 @@ function makeDb(
       filters[key] = value;
       return chain;
     });
+    chain.order = vi.fn(() => chain);
+    chain.gt = vi.fn(() => chain);
     chain.limit = vi.fn(() => chain);
     chain.insert = vi.fn((value: Record<string, unknown>) => {
       operation = 'insert';
@@ -388,5 +390,91 @@ describe('initiateConversationWithTemplate', () => {
     expect(rows).toHaveLength(1);
     expect(mocks.send).toHaveBeenCalledTimes(2);
     expect(retried.whatsappMessageId).toBe('wamid.1');
+  });
+
+  it('requires acknowledgement before a fresh resend after recorded 131049', async () => {
+    const { db, rows } = makeDb();
+    await initiateConversationWithTemplate(db, baseInput());
+    rows[0].status = 'failed';
+    rows[0].message_id = 'wamid.failed';
+    rows[0].failure_code = 131049;
+    rows[0].created_at = '2026-08-18T10:00:00.000Z';
+
+    await expect(
+      initiateConversationWithTemplate(
+        db,
+        baseInput({ clientRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+      )
+    ).rejects.toMatchObject({
+      code: 'retry_acknowledgement_required',
+      status: 409,
+    });
+
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(rows).toHaveLength(1);
+  });
+
+  it('allows an explicitly acknowledged later retry without requiring inbound', async () => {
+    const { db, rows } = makeDb();
+    await initiateConversationWithTemplate(db, baseInput());
+    rows[0].status = 'failed';
+    rows[0].message_id = 'wamid.failed';
+    rows[0].failure_code = 131049;
+    rows[0].created_at = '2026-08-18T10:00:00.000Z';
+
+    const retried = await initiateConversationWithTemplate(
+      db,
+      baseInput({
+        clientRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        acknowledgeRecipientRestriction: true,
+      })
+    );
+
+    expect(retried.deduplicated).toBe(false);
+    expect(mocks.send).toHaveBeenCalledTimes(2);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('allows only one Meta call for concurrent acknowledged duplicate requests', async () => {
+    const { db, rows } = makeDb();
+    await initiateConversationWithTemplate(db, baseInput());
+    rows[0].status = 'failed';
+    rows[0].message_id = 'wamid.failed';
+    rows[0].failure_code = 131049;
+    rows[0].created_at = '2026-08-18T10:00:00.000Z';
+    mocks.send.mockClear();
+
+    const retryInput = baseInput({
+      clientRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      acknowledgeRecipientRestriction: true,
+    });
+    const results = await Promise.allSettled([
+      initiateConversationWithTemplate(db, retryInput),
+      initiateConversationWithTemplate(db, retryInput),
+    ]);
+
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(rows).toHaveLength(2);
+    expect(
+      results.filter((result) => result.status === 'fulfilled')
+    ).toHaveLength(1);
+    expect(
+      results.filter((result) => result.status === 'rejected')
+    ).toHaveLength(1);
+  });
+
+  it('leaves a successfully delivered recipient unaffected', async () => {
+    const { db, rows } = makeDb();
+    await initiateConversationWithTemplate(db, baseInput());
+    rows[0].status = 'delivered';
+    rows[0].message_id = 'wamid.delivered';
+
+    await initiateConversationWithTemplate(
+      db,
+      baseInput({ clientRequestId: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+    );
+
+    expect(mocks.send).toHaveBeenCalledTimes(2);
+    expect(rows).toHaveLength(2);
   });
 });

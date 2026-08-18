@@ -48,6 +48,12 @@ import {
   templateBodyParams,
   templateContentText,
 } from '@/lib/whatsapp/template-body';
+import {
+  DeliveryRestrictionLookupError,
+  findTemplateDeliveryRestriction,
+  RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE,
+  RECIPIENT_DELIVERY_RESTRICTION_MESSAGE,
+} from '@/lib/whatsapp/delivery-errors';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -121,8 +127,13 @@ export function validateSendMessageParams(params: {
   templateName?: string | null;
   interactivePayload?: InteractiveMessagePayload | null;
 }): void {
-  const { messageType, contentText, mediaUrl, templateName, interactivePayload } =
-    params;
+  const {
+    messageType,
+    contentText,
+    mediaUrl,
+    templateName,
+    interactivePayload,
+  } = params;
 
   if (!messageType) {
     throw new SendMessageError('bad_request', 'message_type is required', 400);
@@ -186,6 +197,43 @@ export function validateSendMessageParams(params: {
   }
 }
 
+/**
+ * Fail closed before Meta is called when an identical template's latest
+ * recorded outcome is a non-retryable recipient restriction.
+ */
+export async function enforceTemplateDeliveryRestriction(
+  db: SupabaseClient,
+  conversationId: string,
+  templateName: string,
+  acknowledged = false
+): Promise<void> {
+  let restriction;
+  try {
+    restriction = await findTemplateDeliveryRestriction(
+      db,
+      conversationId,
+      templateName
+    );
+  } catch (error) {
+    if (error instanceof DeliveryRestrictionLookupError) {
+      throw new SendMessageError(
+        'db_error',
+        'Could not verify whether this template can be sent safely',
+        500
+      );
+    }
+    throw error;
+  }
+
+  if (restriction && !restriction.retryableImmediately && !acknowledged) {
+    throw new SendMessageError(
+      RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE,
+      RECIPIENT_DELIVERY_RESTRICTION_MESSAGE,
+      409
+    );
+  }
+}
+
 export async function sendMessageToConversation(
   db: SupabaseClient,
   accountId: string,
@@ -234,6 +282,12 @@ export async function sendMessageToConversation(
 
   if (convError || !conversation) {
     throw new SendMessageError('not_found', 'Conversation not found', 404);
+  }
+
+  // Initiation owns the same check before it creates its reservation row.
+  // All other server-side template paths are enforced here before Meta.
+  if (messageType === 'template' && templateName && !reservedMessageId) {
+    await enforceTemplateDeliveryRestriction(db, conversationId, templateName);
   }
 
   const contact = conversation.contact;
@@ -479,17 +533,17 @@ export async function sendMessageToConversation(
         : (contentText ?? null);
 
   const messagePayload = {
-      conversation_id: conversationId,
-      sender_type: 'agent',
-      content_type: messageType,
-      content_text: persistedText,
-      media_url: mediaUrl || null,
-      template_name: templateName || null,
-      interactive_payload:
-        messageType === 'interactive' ? interactivePayload : null,
-      message_id: waMessageId,
-      status: 'sent',
-      reply_to_message_id: replyToMessageId || null,
+    conversation_id: conversationId,
+    sender_type: 'agent',
+    content_type: messageType,
+    content_text: persistedText,
+    media_url: mediaUrl || null,
+    template_name: templateName || null,
+    interactive_payload:
+      messageType === 'interactive' ? interactivePayload : null,
+    message_id: waMessageId,
+    status: 'sent',
+    reply_to_message_id: replyToMessageId || null,
   };
 
   const persistence = reservedMessageId

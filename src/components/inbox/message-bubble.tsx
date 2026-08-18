@@ -24,6 +24,7 @@ import {
 } from "./message-media";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
 import { useTranslations } from "next-intl";
+import { classifyWhatsAppDeliveryError } from "@/lib/whatsapp/delivery-errors";
 
 interface MessageBubbleProps {
   message: Message;
@@ -43,13 +44,33 @@ interface MessageBubbleProps {
 export interface FailureStatusLabels {
   failed: string;
   metaError: string;
+  metaCode: string;
   notRecorded: string;
+  restrictionTitle: string;
+  restrictionExplanation: string;
+  doNotRetryImmediately: string;
+  recommended: string;
+  waitBeforeRetry: string;
+  askCustomerFirst: string;
 }
 
 export function failureStatusText(
   message: Message,
   labels: FailureStatusLabels,
 ): string {
+  const classification = classifyWhatsAppDeliveryError(message.failure_code);
+  if (classification?.category === "recipient_delivery_restriction") {
+    return [
+      labels.restrictionTitle,
+      labels.restrictionExplanation,
+      labels.doNotRetryImmediately,
+      labels.recommended,
+      `- ${labels.waitBeforeRetry}`,
+      `- ${labels.askCustomerFirst}`,
+      `${labels.metaCode} ${classification.code}`,
+    ].join("\n");
+  }
+
   const lines = [labels.failed];
   if (message.failure_code !== null && message.failure_code !== undefined) {
     lines.push(`${labels.metaError} ${message.failure_code}`);
@@ -330,7 +351,14 @@ export function MessageBubble({
               failureLabels={{
                 failed: t("messageFailed"),
                 metaError: t("metaError"),
+                metaCode: t("metaCode"),
                 notRecorded: t("failureNotRecorded"),
+                restrictionTitle: t("restrictionTitle"),
+                restrictionExplanation: t("restrictionExplanation"),
+                doNotRetryImmediately: t("doNotRetryImmediately"),
+                recommended: t("recommended"),
+                waitBeforeRetry: t("waitBeforeRetry"),
+                askCustomerFirst: t("askCustomerFirst"),
               }}
             />
           )}

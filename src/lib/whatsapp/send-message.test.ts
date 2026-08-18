@@ -207,7 +207,10 @@ interface CapturedWrites {
  */
 function sendPathDb(
   templateRows: unknown[],
-  captured: CapturedWrites
+  captured: CapturedWrites,
+  options: {
+    latestTemplateMessage?: Record<string, unknown> | null;
+  } = {}
 ): SupabaseClient {
   const conversation = {
     id: 'cv-1',
@@ -221,9 +224,16 @@ function sendPathDb(
 
   return {
     from(table: string) {
+      const filters: Record<string, unknown> = {};
       const builder: Record<string, unknown> = {
         select: () => builder,
-        eq: () => builder,
+        eq: (key: string, value: unknown) => {
+          filters[key] = value;
+          return builder;
+        },
+        gt: () => builder,
+        order: () => builder,
+        limit: () => builder,
         insert: (row: Record<string, unknown>) => {
           if (table === 'messages') captured.message = row;
           return builder;
@@ -233,7 +243,13 @@ function sendPathDb(
           if (table === 'messages') captured.messageUpdate = row;
           return builder;
         },
-        maybeSingle: async () => ({ data: null, error: null }),
+        maybeSingle: async () => ({
+          data:
+            table === 'messages' && filters.content_type === 'template'
+              ? (options.latestTemplateMessage ?? null)
+              : null,
+          error: null,
+        }),
         single: async () => {
           if (table === 'conversations') {
             return { data: conversation, error: null };
@@ -294,12 +310,16 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
 
   it('reads body values out of the structured params shape too', async () => {
     const captured: CapturedWrites = {};
-    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', {
-      conversationId: 'cv-1',
-      messageType: 'template',
-      templateName: 'order_update',
-      templateMessageParams: { body: ['B456', 'Monday'] },
-    });
+    await sendMessageToConversation(
+      sendPathDb([TEMPLATE_ROW], captured),
+      'acct-1',
+      {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateMessageParams: { body: ['B456', 'Monday'] },
+      }
+    );
     expect(captured.message?.content_text).toBe(
       'Your order B456 ships on Monday'
     );
@@ -307,30 +327,39 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
 
   it("does not override the composer's pre-rendered text", async () => {
     const captured: CapturedWrites = {};
-    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', {
-      conversationId: 'cv-1',
-      messageType: 'template',
-      templateName: 'order_update',
-      templateParams: ['A123', 'Friday'],
-      contentText: 'rendered by the composer',
-    });
+    await sendMessageToConversation(
+      sendPathDb([TEMPLATE_ROW], captured),
+      'acct-1',
+      {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateParams: ['A123', 'Friday'],
+        contentText: 'rendered by the composer',
+      }
+    );
     expect(captured.message?.content_text).toBe('rendered by the composer');
   });
 
   it("sends the local row's language when the caller names none", async () => {
     sendTemplateMessage.mockClear();
     const captured: CapturedWrites = {};
-    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', {
-      conversationId: 'cv-1',
-      messageType: 'template',
-      templateName: 'order_update',
-      templateParams: ['A123', 'Friday'],
-    });
+    await sendMessageToConversation(
+      sendPathDb([TEMPLATE_ROW], captured),
+      'acct-1',
+      {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateParams: ['A123', 'Friday'],
+      }
+    );
     // Previously pinned to 'en_US', which matched no row and made Meta
     // reject the send as a missing translation.
     expect(
-      (sendTemplateMessage.mock.calls[0] as unknown as [{ language: string }])[0]
-        .language
+      (
+        sendTemplateMessage.mock.calls[0] as unknown as [{ language: string }]
+      )[0].language
     ).toBe('en');
   });
 
@@ -376,15 +405,55 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
     const captured: CapturedWrites = {};
 
     await expect(
-      sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', {
-        conversationId: 'cv-1',
-        messageType: 'template',
-        templateName: 'order_update',
-        templateParams: ['A123', 'Friday'],
-        reservedMessageId: 'reserved-1',
-      })
+      sendMessageToConversation(
+        sendPathDb([TEMPLATE_ROW], captured),
+        'acct-1',
+        {
+          conversationId: 'cv-1',
+          messageType: 'template',
+          templateName: 'order_update',
+          templateParams: ['A123', 'Friday'],
+          reservedMessageId: 'reserved-1',
+        }
+      )
     ).rejects.toMatchObject({ code: 'meta_error', status: 502 });
 
     expect(captured.messageUpdate).toEqual({ status: 'failed' });
+  });
+
+  it('blocks two concurrent 131049 resends before either calls Meta', async () => {
+    sendTemplateMessage.mockClear();
+    const captured: CapturedWrites = {};
+    const db = sendPathDb([TEMPLATE_ROW], captured, {
+      latestTemplateMessage: {
+        status: 'failed',
+        failure_code: 131049,
+        created_at: '2026-08-18T10:00:00.000Z',
+      },
+    });
+
+    const params = {
+      conversationId: 'cv-1',
+      messageType: 'template',
+      templateName: 'order_update',
+    };
+    const attempts = await Promise.allSettled([
+      sendMessageToConversation(db, 'acct-1', params),
+      sendMessageToConversation(db, 'acct-1', params),
+    ]);
+
+    expect(attempts).toHaveLength(2);
+    for (const attempt of attempts) {
+      expect(attempt.status).toBe('rejected');
+      if (attempt.status === 'rejected') {
+        expect(attempt.reason).toMatchObject({
+          code: 'retry_acknowledgement_required',
+          status: 409,
+        });
+      }
+    }
+
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+    expect(captured.message).toBeUndefined();
   });
 });

@@ -4,7 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Loader2, Search, UserRoundPlus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-import { TemplatePicker, type TemplateSendValues } from './template-picker';
+import {
+  TemplatePicker,
+  type TemplateSendOptions,
+  type TemplateSendValues,
+} from './template-picker';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -19,6 +23,10 @@ import { Label } from '@/components/ui/label';
 import { createClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils';
 import { isValidE164, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
+import {
+  RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE,
+  RecipientRetryAcknowledgementRequiredError,
+} from '@/lib/whatsapp/delivery-errors';
 import type { Contact, MessageTemplate } from '@/types';
 
 type TargetMode = 'existing' | 'new';
@@ -141,7 +149,8 @@ export function NewConversationDialog({
 
   async function sendTemplate(
     template: MessageTemplate,
-    values: TemplateSendValues
+    values: TemplateSendValues,
+    options: TemplateSendOptions
   ) {
     if (!target || !clientRequestIdRef.current) {
       throw new Error(t('targetMissing'));
@@ -158,6 +167,8 @@ export function NewConversationDialog({
           phone: target.phone,
           template_id: template.id,
           client_request_id: clientRequestIdRef.current,
+          acknowledge_recipient_restriction:
+            options.acknowledgeRecipientRestriction,
           template_message_params: {
             body: values.body,
             headerText: values.headerText,
@@ -173,9 +184,13 @@ export function NewConversationDialog({
 
     const payload = (await response.json().catch(() => ({}))) as {
       error?: string;
+      code?: string;
       conversation_id?: string;
     };
     if (!response.ok || !payload.conversation_id) {
+      if (payload.code === RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE) {
+        throw new RecipientRetryAcknowledgementRequiredError(payload.error);
+      }
       throw new Error(payload.error || t('sendFailed'));
     }
 
@@ -324,6 +339,7 @@ export function NewConversationDialog({
 
       <TemplatePicker
         open={templateOpen}
+        showMarketingDeliveryNotice
         onOpenChange={(next) => {
           setTemplateOpen(next);
           if (!next && clientRequestIdRef.current) reset();

@@ -6,6 +6,7 @@ import {
   type ResolvedConversation,
 } from '@/lib/whatsapp/resolve-conversation';
 import {
+  enforceTemplateDeliveryRestriction,
   SendMessageError,
   sendMessageToConversation,
 } from '@/lib/whatsapp/send-message';
@@ -36,6 +37,7 @@ export interface InitiateConversationParams {
   templateId: string;
   clientRequestId: string;
   templateMessageParams?: unknown;
+  acknowledgeRecipientRestriction?: boolean;
 }
 
 export interface InitiateConversationResult {
@@ -284,6 +286,16 @@ export async function initiateConversationWithTemplate(
     contactId ? null : name,
     input.userId,
     contactId
+  );
+
+  // A fresh request id must not bypass a recorded recipient restriction
+  // accidentally. Authorized callers may deliberately acknowledge the warning;
+  // the reservation below remains the one-send idempotency boundary.
+  await enforceTemplateDeliveryRestriction(
+    db,
+    resolved.conversationId,
+    template.name,
+    input.acknowledgeRecipientRestriction === true
   );
 
   const renderedText = templateContentText(

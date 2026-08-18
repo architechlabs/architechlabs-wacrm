@@ -51,6 +51,8 @@ export async function POST(request: Request) {
             ? body.client_request_id
             : '',
         templateMessageParams: body.template_message_params,
+        acknowledgeRecipientRestriction:
+          body.acknowledge_recipient_restriction === true,
       });
 
       return NextResponse.json({

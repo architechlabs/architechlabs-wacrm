@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
 import { useAuth } from '@/hooks/use-auth';
@@ -9,8 +9,13 @@ import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag, ContactNote, CustomField, ContactCustomValue, Deal, MessageTemplate } from '@/types';
 import {
   TemplatePicker,
+  type TemplateSendOptions,
   type TemplateSendValues,
 } from '@/components/inbox/template-picker';
+import {
+  RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE,
+  RecipientRetryAcknowledgementRequiredError,
+} from '@/lib/whatsapp/delivery-errors';
 import {
   Sheet,
   SheetContent,
@@ -64,10 +69,11 @@ export function ContactDetailView({
   const [copiedPhone, setCopiedPhone] = useState(false);
 
   // Send template — lets the business initiate (or re-open) a conversation
-  // with this contact by sending an approved template. The send route
-  // find-or-creates the conversation, so no inbound message is required.
+  // with this contact by sending an approved template. The initiation route
+  // find-or-creates the conversation and provides durable idempotency.
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [sendingTemplate, setSendingTemplate] = useState(false);
+  const templateRequestIdRef = useRef<string | null>(null);
 
   // Details tab
   const [editName, setEditName] = useState('');
@@ -327,40 +333,52 @@ export function ContactDetailView({
   async function handleSendTemplate(
     template: MessageTemplate,
     values: TemplateSendValues,
+    options: TemplateSendOptions,
   ) {
     if (!contactId) return;
+    templateRequestIdRef.current ??= crypto.randomUUID();
     setSendingTemplate(true);
     try {
-      const res = await fetch('/api/whatsapp/send', {
+      const res = await fetch('/api/whatsapp/conversations/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          // No conversation_id — the route find-or-creates one for this
-          // contact, mirroring the inbox template-send payload otherwise.
+          // No conversation_id: the idempotent initiation route resolves the
+          // contact's conversation before reserving this logical request.
           contact_id: contactId,
-          message_type: 'template',
-          template_name: template.name,
-          template_language: template.language,
+          template_id: template.id,
+          client_request_id: templateRequestIdRef.current,
+          acknowledge_recipient_restriction:
+            options.acknowledgeRecipientRestriction,
           template_message_params: {
             body: values.body,
             headerText: values.headerText,
             buttonParams: values.buttonParams,
           },
-          template_params: values.body,
         }),
       });
 
-      const payload = await res.json().catch(() => ({}));
+      const payload = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        code?: string;
+      };
       if (!res.ok) {
         const reason = payload?.error || `HTTP ${res.status}`;
-        toast.error(t('toastTemplateFailed', { reason }));
-        return;
+        if (payload.code === RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE) {
+          throw new RecipientRetryAcknowledgementRequiredError(reason);
+        }
+        throw new Error(reason);
       }
 
+      templateRequestIdRef.current = null;
       toast.success(t('toastTemplateSent', { name: template.name }));
     } catch (err) {
+      if (err instanceof RecipientRetryAcknowledgementRequiredError) {
+        throw err;
+      }
       const reason = err instanceof Error ? err.message : 'network error';
-      toast.error(`Failed to send template: ${reason}`);
+      toast.error(t('toastTemplateFailed', { reason }));
+      throw err;
     } finally {
       setSendingTemplate(false);
     }
@@ -751,7 +769,10 @@ export function ContactDetailView({
     </Sheet>
     <TemplatePicker
       open={templatePickerOpen}
-      onOpenChange={setTemplatePickerOpen}
+      onOpenChange={(next) => {
+        setTemplatePickerOpen(next);
+        if (!next) templateRequestIdRef.current = null;
+      }}
       onSelect={handleSendTemplate}
     />
     </>

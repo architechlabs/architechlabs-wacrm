@@ -49,11 +49,19 @@ import {
   type SendMediaPayload,
 } from "./message-composer";
 import { deleteAccountMedia } from "@/lib/storage/upload-media";
-import { TemplatePicker } from "./template-picker";
+import {
+  TemplatePicker,
+  type TemplateSendOptions,
+} from "./template-picker";
 import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview } from "./reply-quote";
 import { renderTemplateBody } from "@/lib/whatsapp/template-body";
 import { toast } from "sonner";
+import {
+  isNoCustomerResponseConversation,
+  RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE,
+  RecipientRetryAcknowledgementRequiredError,
+} from "@/lib/whatsapp/delivery-errors";
 
 interface ReplyDraft {
   id: string;
@@ -173,6 +181,7 @@ export function MessageThread({
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const templateRequestIdRef = useRef<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
@@ -240,7 +249,14 @@ export function MessageThread({
       .reverse()
       .find((m) => m.sender_type === "customer");
 
-    if (!lastCustomerMsg) return { expired: true, remaining: "No customer messages" };
+    if (!lastCustomerMsg) {
+      return {
+        expired: true,
+        remaining: isNoCustomerResponseConversation(messages)
+          ? tTimer("noCustomerResponse")
+          : tTimer("noCustomerMessages"),
+      };
+    }
 
     const hoursSince = differenceInHours(new Date(), new Date(lastCustomerMsg.created_at));
     const expired = hoursSince >= 24;
@@ -666,66 +682,67 @@ export function MessageThread({
         headerText?: string;
         buttonParams?: Record<number, string>;
       },
+      options: TemplateSendOptions,
     ) => {
-      if (!conversation) return;
+      if (!conversation || !contact) return;
 
       const renderedBody = renderTemplateBody(template.body_text, values.body);
-      const tempId = `temp-${Date.now()}`;
-
-      const optimisticMsg: Message = {
-        id: tempId,
-        conversation_id: conversation.id,
-        sender_type: "agent",
-        content_type: "template",
-        content_text: renderedBody,
-        template_name: template.name,
-        status: "sending",
-        created_at: new Date().toISOString(),
-      };
-      onNewMessage(optimisticMsg);
+      templateRequestIdRef.current ??= crypto.randomUUID();
 
       try {
-        const res = await fetch("/api/whatsapp/send", {
+        const res = await fetch("/api/whatsapp/conversations/initiate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            conversation_id: conversation.id,
-            message_type: "template",
-            template_name: template.name,
-            template_language: template.language,
-            // Structured params drive the new send-builder path
-            // (header media + URL button substitution). Body values
-            // are mirrored under both shapes so the route can fall
-            // back if the template row isn't found locally.
+            contact_id: contact.id,
+            template_id: template.id,
+            client_request_id: templateRequestIdRef.current,
+            acknowledge_recipient_restriction:
+              options.acknowledgeRecipientRestriction,
             template_message_params: {
               body: values.body,
               headerText: values.headerText,
               buttonParams: values.buttonParams,
             },
-            template_params: values.body,
-            content_text: renderedBody,
           }),
         });
 
-        const payload = await res.json().catch(() => ({}));
+        const payload = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          code?: string;
+          message_id?: string;
+        };
 
-        if (!res.ok) {
+        if (!res.ok || !payload.message_id) {
           const reason = payload?.error || `HTTP ${res.status}`;
-          console.error("Failed to send template:", reason);
-          toast.error(`Failed to send template: ${reason}`);
-          onUpdateMessage(tempId, { status: "failed" });
-          return;
+          if (payload.code === RECIPIENT_RETRY_ACKNOWLEDGEMENT_CODE) {
+            throw new RecipientRetryAcknowledgementRequiredError(reason);
+          }
+          throw new Error(reason);
         }
 
-        onUpdateMessage(tempId, { status: "sent" });
+        onNewMessage({
+          id: payload.message_id,
+          conversation_id: conversation.id,
+          sender_type: "agent",
+          content_type: "template",
+          content_text: renderedBody,
+          template_name: template.name,
+          status: "sent",
+          created_at: new Date().toISOString(),
+        });
+        templateRequestIdRef.current = null;
       } catch (err) {
+        if (err instanceof RecipientRetryAcknowledgementRequiredError) {
+          throw err;
+        }
         console.error("Failed to send template:", err);
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(`Failed to send template: ${reason}`);
-        onUpdateMessage(tempId, { status: "failed" });
+        throw err;
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [contact, conversation, onNewMessage],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
@@ -1186,7 +1203,10 @@ export function MessageThread({
 
       <TemplatePicker
         open={templateModalOpen}
-        onOpenChange={setTemplateModalOpen}
+        onOpenChange={(next) => {
+          setTemplateModalOpen(next);
+          if (!next) templateRequestIdRef.current = null;
+        }}
         onSelect={handleSendTemplate}
       />
 

@@ -78,9 +78,20 @@ describe('POST /api/whatsapp/conversations/initiate', () => {
 
   it('refuses a viewer before any Meta workflow runs', async () => {
     h.roleAllowed = false;
-    const response = await POST(request());
+    const response = await POST(
+      request({ acknowledge_recipient_restriction: true })
+    );
     expect(response.status).toBe(403);
     expect(h.initiate).not.toHaveBeenCalled();
+  });
+
+  it('passes an explicit retry acknowledgement to the authorized service', async () => {
+    await POST(request({ acknowledge_recipient_restriction: true }));
+
+    expect(h.initiate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ acknowledgeRecipientRestriction: true })
+    );
   });
 
   it('accepts only the template initiation shape (no free-form message field)', async () => {
@@ -108,5 +119,26 @@ describe('POST /api/whatsapp/conversations/initiate', () => {
       code: 'meta_error',
     });
     expect(JSON.stringify(payload)).not.toContain('internal diagnostic');
+  });
+
+  it('returns the agent-safe retry warning without exposing raw details', async () => {
+    h.initiate.mockRejectedValue(
+      new SendMessageError(
+        'retry_acknowledgement_required',
+        'Meta previously restricted this marketing message for this recipient. Sending again may fail. Explicit confirmation is required.',
+        409
+      )
+    );
+
+    const response = await POST(request());
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload).toEqual({
+      error:
+        'Meta previously restricted this marketing message for this recipient. Sending again may fail. Explicit confirmation is required.',
+      code: 'retry_acknowledgement_required',
+    });
+    expect(h.initiate).toHaveBeenCalledTimes(1);
   });
 });
