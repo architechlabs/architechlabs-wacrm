@@ -42,6 +42,55 @@ BEGIN
     RAISE EXCEPTION 'public.accounts is missing — migration 017 did not apply';
   END IF;
 
+  -- Phase 2B Inbox pagination contracts (043). Keep this structural; the
+  -- behavioral/security matrix lives in test-inbox-pagination.sql.
+  IF to_regprocedure(
+    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)'
+  ) IS NULL THEN
+    RAISE EXCEPTION 'get_inbox_conversations_page is missing — migration 043 did not apply';
+  END IF;
+  IF to_regprocedure('public.get_inbox_company_options(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'get_inbox_company_options is missing — migration 043 did not apply';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc
+    WHERE oid IN (
+      to_regprocedure(
+        'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)'
+      ),
+      to_regprocedure('public.get_inbox_company_options(uuid)')
+    )
+      AND prosecdef
+  ) THEN
+    RAISE EXCEPTION 'Inbox pagination functions must remain SECURITY INVOKER';
+  END IF;
+
+  IF has_function_privilege(
+    'anon',
+    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'anon',
+    'public.get_inbox_company_options(uuid)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'anon must not execute Inbox pagination functions';
+  END IF;
+
+  IF NOT has_function_privilege(
+    'authenticated',
+    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)',
+    'EXECUTE'
+  ) OR NOT has_function_privilege(
+    'authenticated',
+    'public.get_inbox_company_options(uuid)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'authenticated must be able to execute Inbox pagination functions';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

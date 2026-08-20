@@ -69,3 +69,13 @@ jobs:
       # just the absence of an error.
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
+
+      # Behavioral/RLS coverage needs session role changes and multiple SQL
+      # statements in one transaction. `supabase db query --file` sends one
+      # prepared statement, so run this rollback-only contract through psql
+      # inside the already-running local database container.
+      - name: Test Inbox pagination contract
+        run: >-
+          docker exec -i supabase_db_wacrm
+          psql --username postgres --dbname postgres --set ON_ERROR_STOP=1
+          < supabase/ci/test-inbox-pagination.sql
