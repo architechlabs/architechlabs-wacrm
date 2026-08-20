@@ -1,6 +1,11 @@
 import { createServerClient } from '@supabase/ssr'
 import type { User } from '@supabase/supabase-js'
 import { NextResponse, type NextRequest } from 'next/server'
+import {
+  API_CACHE_CONTROL,
+  isPrivateAppPathname,
+  PRIVATE_CACHE_CONTROL,
+} from '@/lib/http/request-policy'
 
 const MAX_AUTH_ERROR_MESSAGE_LENGTH = 300
 
@@ -129,6 +134,17 @@ export async function middleware(request: NextRequest) {
     return response
   }
 
+  const withPrivateCache = <T extends NextResponse>(response: T): T => {
+    response.headers.set('Cache-Control', PRIVATE_CACHE_CONTROL)
+    return response
+  }
+
+  // Protect both HTML and RSC pass-through responses. setAll() can replace
+  // supabaseResponse during getUser(), so apply this only after auth settles.
+  if (isPrivateAppPathname(request.nextUrl.pathname)) {
+    supabaseResponse.headers.set('Cache-Control', PRIVATE_CACHE_CONTROL)
+  }
+
   // Auth pages - redirect to dashboard if already logged in.
   // Exception: when an invite token is in the query string we
   // send the already-signed-in user to /join/<token> instead so
@@ -153,7 +169,7 @@ export async function middleware(request: NextRequest) {
       url.pathname = '/dashboard'
       url.search = ''
     }
-    return withRefreshedCookies(NextResponse.redirect(url))
+    return withPrivateCache(withRefreshedCookies(NextResponse.redirect(url)))
   }
 
   // Protected pages - redirect to login if not authenticated
@@ -161,15 +177,17 @@ export async function middleware(request: NextRequest) {
   if (!user && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path))) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
-    return withRefreshedCookies(NextResponse.redirect(url))
+    return withPrivateCache(withRefreshedCookies(NextResponse.redirect(url)))
   }
 
   // API routes that need auth (not webhooks)
   if (!user && request.nextUrl.pathname.startsWith('/api/whatsapp/') &&
       !request.nextUrl.pathname.includes('/webhook')) {
-    return withRefreshedCookies(
+    const response = withRefreshedCookies(
       NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     )
+    response.headers.set('Cache-Control', API_CACHE_CONTROL)
+    return response
   }
 
   return supabaseResponse
@@ -177,6 +195,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!$|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }

@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
+import {
+  createCacheHeaderRules,
+  ROOT_REDIRECT,
+} from "./src/lib/http/request-policy";
 
 initOpenNextCloudflareForDev();
 
@@ -100,59 +104,22 @@ const nextConfig: NextConfig = {
       : []),
   ],
 
+  // Redirect before middleware/proxy and route rendering. The destination is
+  // fixed and internal, so both signed-in and signed-out visitors reach the
+  // protected /dashboard path where authentication runs exactly once.
+  async redirects() {
+    return [ROOT_REDIRECT];
+  },
+
   /**
-   * Cache-Control policy.
-   *
-   * Why this exists:
-   *   Hostinger's CDN was applying `s-maxage=31536000` (1 year) to
-   *   prerendered HTML pages by default. When a new deploy shipped
-   *   fresh Turbopack chunk hashes, the edge kept serving year-old
-   *   HTML referencing chunk filenames that no longer existed on
-   *   disk — result: HTML 200, every /_next/static/*.js and .css
-   *   came back 404, the page rendered unstyled. Private/incognito
-   *   did nothing because the cache is server-side.
-   *
-   * Strategy:
-   *   - /_next/static/* — leave to Next. Turbopack dev chunks can go
-   *     stale if we force immutable caching here; Next already emits
-   *     the correct production headers for hashed assets.
-   *   - /api/*          — no-store. API responses are per-user and
-   *     must never be shared across requests at the edge.
-   *   - Everything else — public, brief s-maxage + generous
-   *     stale-while-revalidate. The edge serves instantly from cache
-   *     for the first 5 min, then returns cached content while
-   *     refreshing in the background for up to 24 h. A deploy's
-   *     chunk-hash drift self-heals within ~5 min with no user-
-   *     visible latency.
-   *
-   *   Note: dynamic dashboard routes (/inbox, /contacts, /pipelines,
-   *   /broadcasts, etc.) are server-rendered per request — Next.js
-   *   and Supabase auth already prevent them from being served
-   *   from a shared cache. The s-maxage here is a ceiling; Next.js
-   *   and auth middleware still set `private` / `no-store` for
-   *   per-user responses.
-   *
-   * Security headers are appended via a separate catch-all rule
-   * below — Next.js merges headers from every matching rule, so
-   * they apply to every response regardless of which cache rule
-   * matched.
+   * Hashed framework assets keep Next's immutable policy. API responses and
+   * every authenticated dashboard/RSC path are explicitly excluded from
+   * shared caches. Only data-free auth shells retain the short public policy
+   * that prevents stale HTML from referencing retired chunk hashes.
    */
   async headers() {
     return [
-      {
-        source: "/api/:path*",
-        headers: [{ key: "Cache-Control", value: "no-store" }],
-      },
-      {
-        source: "/:path((?!_next/static|_next/image|api).*)",
-        headers: [
-          {
-            key: "Cache-Control",
-            value:
-              "public, max-age=0, s-maxage=300, stale-while-revalidate=86400",
-          },
-        ],
-      },
+      ...createCacheHeaderRules(),
       {
         // Security headers on every response, including /_next/static
         // assets (nosniff matters there) and /api/* (HSTS + referrer-
