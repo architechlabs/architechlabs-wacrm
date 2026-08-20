@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
-import type { Contact, Tag, ContactTag } from '@/types';
+import type { Contact, ContactTag } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -57,12 +57,17 @@ import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager
 import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
+import {
+  groupContactTags,
+  type ContactTagSummary,
+  type ContactTagSummaryRow,
+} from '@/lib/contacts/contact-tags';
 
 const PAGE_SIZE = 25;
 
-interface ContactWithTags extends Contact {
-  tags?: Tag[];
-}
+type ContactWithTags = Omit<Contact, 'tags'> & {
+  tags?: ContactTagSummary[];
+};
 
 export default function ContactsPage() {
   const t = useTranslations('Contacts.page');
@@ -87,7 +92,7 @@ export default function ContactsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [customFieldsOpen, setCustomFieldsOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ContactWithTags | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   // Bulk selection (page-scoped — only the loaded rows are selectable)
@@ -95,7 +100,7 @@ export default function ContactsPage() {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   // All tags for display
-  const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
+  const [tagsMap, setTagsMap] = useState<Record<string, ContactTagSummary>>({});
 
   // Guards against out-of-order fetch responses: each fetchContacts run
   // claims a sequence number and only the latest is allowed to commit its
@@ -104,9 +109,9 @@ export default function ContactsPage() {
   const fetchSeq = useRef(0);
 
   const fetchTags = useCallback(async () => {
-    const { data } = await supabase.from('tags').select('*');
+    const { data } = await supabase.from('tags').select('id, name, color');
     if (data) {
-      const map: Record<string, Tag> = {};
+      const map: Record<string, ContactTagSummary> = {};
       data.forEach((t) => (map[t.id] = t));
       setTagsMap(map);
       // Drop any filter selections whose tag no longer exists (e.g. a tag
@@ -188,26 +193,22 @@ export default function ContactsPage() {
     const contactIds = contactRows.map((c) => c.id);
     const { data: contactTags } = await supabase
       .from('contact_tags')
-      .select('contact_id, tag_id')
+      .select('contact_id, tag:tags(id, name, color)')
       .in('contact_id', contactIds);
     if (seq !== fetchSeq.current) return; // superseded by a newer fetch
 
-    const tagsByContact: Record<string, string[]> = {};
-    contactTags?.forEach((ct) => {
-      if (!tagsByContact[ct.contact_id]) tagsByContact[ct.contact_id] = [];
-      tagsByContact[ct.contact_id].push(ct.tag_id);
-    });
+    const tagsByContact = groupContactTags(
+      contactTags as ContactTagSummaryRow[] | null,
+    );
 
     const enriched: ContactWithTags[] = contactRows.map((c) => ({
       ...c,
-      tags: (tagsByContact[c.id] ?? [])
-        .map((tid) => tagsMap[tid])
-        .filter(Boolean),
+      tags: tagsByContact[c.id] ?? [],
     }));
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagsMap, t]);
+  }, [supabase, page, search, selectedTagIds, t]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -229,12 +230,12 @@ export default function ContactsPage() {
     setFormOpen(true);
   }
 
-  async function openEditForm(contact: Contact) {
+  async function openEditForm(contact: ContactWithTags) {
     const { data } = await supabase
       .from('contact_tags')
-      .select('*')
+      .select('id, contact_id, tag_id')
       .eq('contact_id', contact.id);
-    setEditContact(contact);
+    setEditContact({ ...contact, tags: undefined });
     setEditContactTags(data ?? []);
     setFormOpen(true);
   }
@@ -244,7 +245,7 @@ export default function ContactsPage() {
     setDetailOpen(true);
   }
 
-  function confirmDelete(contact: Contact) {
+  function confirmDelete(contact: ContactWithTags) {
     setDeleteTarget(contact);
     setDeleteConfirmOpen(true);
   }

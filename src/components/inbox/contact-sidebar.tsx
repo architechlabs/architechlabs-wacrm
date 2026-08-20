@@ -25,15 +25,23 @@ interface ContactSidebarProps {
   contact: Contact | null;
 }
 
+type SidebarDeal = Pick<Deal, "id" | "title" | "value" | "currency"> & {
+  stage?: Pick<NonNullable<Deal["stage"]>, "name" | "color"> | null;
+};
+type SidebarNote = Pick<ContactNote, "id" | "note_text" | "created_at">;
+type SidebarTag = Pick<Tag, "id" | "name" | "color"> & {
+  contact_tag_id: string;
+};
+
 export function ContactSidebar({ contact }: ContactSidebarProps) {
   const tSidebar = useTranslations("Inbox.sidebar");
   const tThread = useTranslations("Inbox.messageThread");
 
   const { accountId } = useAuth();
   const [copied, setCopied] = useState(false);
-  const [deals, setDeals] = useState<Deal[]>([]);
-  const [notes, setNotes] = useState<ContactNote[]>([]);
-  const [tags, setTags] = useState<(Tag & { contact_tag_id: string })[]>([]);
+  const [deals, setDeals] = useState<SidebarDeal[]>([]);
+  const [notes, setNotes] = useState<SidebarNote[]>([]);
+  const [tags, setTags] = useState<SidebarTag[]>([]);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
 
@@ -46,27 +54,36 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     const [dealsRes, notesRes, tagsRes] = await Promise.all([
       supabase
         .from("deals")
-        .select("*, stage:pipeline_stages(*)")
+        .select("id, title, value, currency, stage:pipeline_stages(name, color)")
         .eq("contact_id", contact.id)
         .order("created_at", { ascending: false }),
       supabase
         .from("contact_notes")
-        .select("*")
+        .select("id, note_text, created_at")
         .eq("contact_id", contact.id)
         .order("created_at", { ascending: false }),
       supabase
         .from("contact_tags")
-        .select("id, tag_id, tags(*)")
+        .select("id, tags(id, name, color)")
         .eq("contact_id", contact.id),
     ]);
 
-    if (dealsRes.data) setDeals(dealsRes.data);
+    if (dealsRes.data) {
+      setDeals(
+        dealsRes.data.map((deal) => ({
+          ...deal,
+          stage: Array.isArray(deal.stage)
+            ? (deal.stage[0] ?? null)
+            : deal.stage,
+        })) as SidebarDeal[],
+      );
+    }
     if (notesRes.data) setNotes(notesRes.data);
     if (tagsRes.data) {
       const mapped = tagsRes.data
         .filter((ct: Record<string, unknown>) => ct.tags)
         .map((ct: Record<string, unknown>) => ({
-          ...(ct.tags as Tag),
+          ...(ct.tags as Pick<Tag, "id" | "name" | "color">),
           contact_tag_id: ct.id as string,
         }));
       setTags(mapped);

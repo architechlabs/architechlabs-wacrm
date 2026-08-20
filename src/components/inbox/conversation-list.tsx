@@ -47,6 +47,7 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 
 
 type InboxFilter = ConversationStatus | "all" | "unread";
+type InboxTag = Pick<Tag, "id" | "name" | "color">;
 
 export function ConversationList({
   activeConversationId,
@@ -72,7 +73,7 @@ export function ConversationList({
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
   // Broadcast audience filtering. Company is an exact match on the field.
-  const [tags, setTags] = useState<Tag[]>([]);
+  const [tags, setTags] = useState<InboxTag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
 
@@ -135,8 +136,11 @@ export function ConversationList({
     const supabase = createClient();
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.from("tags").select("*").order("name");
-      if (!cancelled && data) setTags(data as Tag[]);
+      const { data } = await supabase
+        .from("tags")
+        .select("id, name, color")
+        .order("name");
+      if (!cancelled && data) setTags(data as InboxTag[]);
     })();
     return () => {
       cancelled = true;
@@ -156,7 +160,7 @@ export function ConversationList({
   }, [conversations]);
 
   const tagsById = useMemo(() => {
-    const m = new Map<string, Tag>();
+    const m = new Map<string, InboxTag>();
     for (const t of tags) m.set(t.id, t);
     return m;
   }, [tags]);

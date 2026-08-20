@@ -69,6 +69,8 @@ interface ReplyDraft {
   preview: string;
 }
 
+type AssigneeProfile = Pick<Profile, "id" | "user_id" | "full_name">;
+
 interface MessageThreadProps {
   conversation: Conversation | null;
   contact: Contact | null;
@@ -182,7 +184,7 @@ export function MessageThread({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const templateRequestIdRef = useRef<string | null>(null);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profiles, setProfiles] = useState<AssigneeProfile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
   // refetch is fire-and-forget through `onRefresh` (which bumps the
@@ -225,7 +227,7 @@ export function MessageThread({
     const supabase = createClient();
     supabase
       .from("profiles")
-      .select("*")
+      .select("id, user_id, full_name")
       .order("full_name")
       .then(({ data, error }) => {
         if (cancelled) return;
@@ -233,7 +235,7 @@ export function MessageThread({
           console.error("Failed to fetch profiles:", error);
           return;
         }
-        setProfiles((data as Profile[]) ?? []);
+        setProfiles((data as AssigneeProfile[]) ?? []);
       });
     return () => {
       cancelled = true;

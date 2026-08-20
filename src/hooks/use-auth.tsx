@@ -20,6 +20,7 @@ import {
   isAccountRole,
   type AccountRole,
 } from "@/lib/auth/roles";
+import { ProfileInitializationCoordinator } from "@/lib/auth/profile-initialization";
 
 interface Profile {
   id: string;
@@ -173,20 +174,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // window they're in — see the type doc above.
   const [profileLoading, setProfileLoading] = useState(true);
 
-  // Tracks the user ID we've successfully initiated/completed fetching
-  // a profile for. This prevents redundant re-fetches and toggling
-  // profileLoading back to true on window focus events/token refresh.
-  const lastFetchedUserIdRef = useRef<string | null>(null);
+  // Only successful initialization is sticky. Failed attempts remain
+  // retryable on a later auth event or refreshProfile() call.
+  const lastInitializedUserIdRef = useRef<string | null>(null);
+  const authEventVersionRef = useRef(0);
+  const [profileInitialization] = useState(
+    () => new ProfileInitializationCoordinator(),
+  );
 
   // Shared across init, auth-state-change listener, and the exposed
   // refreshProfile() callback. Reads the current session's user id and
   // pulls the matching profile row along with its account summary.
   const fetchProfile = useCallback(async (userId: string) => {
-    const supabase = createClient();
+    if (!profileInitialization.isActive(userId)) return;
     setProfileLoading(true);
     setStatusDetail(null);
-    lastFetchedUserIdRef.current = userId;
-    try {
+    await profileInitialization.run(userId, async (isCurrent) => {
+      const supabase = createClient();
+      try {
       let data: ProfileRow | null = null;
       for (let attempt = 1; ; attempt++) {
         const result = await supabase
@@ -217,8 +222,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await sleep(PROFILE_FETCH_RETRY_MS);
           continue;
         }
-        lastFetchedUserIdRef.current = null;
-        setStatusDetail(error.message);
+        if (isCurrent()) {
+          lastInitializedUserIdRef.current = null;
+          setStatusDetail(error.message);
+        }
         return;
       }
 
@@ -267,6 +274,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ? data.account_role
           : null;
 
+        if (!isCurrent()) return;
+        lastInitializedUserIdRef.current = userId;
         setProfile({
           id: data.id,
           full_name: data.full_name,
@@ -293,17 +302,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           );
         }
       } else {
-        lastFetchedUserIdRef.current = null;
-        setStatusDetail("no profiles row for the signed-in user");
+        if (isCurrent()) {
+          lastInitializedUserIdRef.current = null;
+          setStatusDetail("no profiles row for the signed-in user");
+        }
       }
-    } catch (err) {
-      console.error("[AuthProvider] fetchProfile threw:", err);
-      lastFetchedUserIdRef.current = null;
-      setStatusDetail(err instanceof Error ? err.message : "profile fetch failed");
-    } finally {
-      setProfileLoading(false);
-    }
-  }, []);
+      } catch (err) {
+        console.error("[AuthProvider] fetchProfile threw:", err);
+        if (isCurrent()) {
+          lastInitializedUserIdRef.current = null;
+          setStatusDetail(
+            err instanceof Error ? err.message : "profile fetch failed",
+          );
+        }
+      } finally {
+        if (isCurrent()) setProfileLoading(false);
+      }
+    }, () => {});
+  }, [profileInitialization]);
+
+  const applyAuthUser = useCallback(
+    (currentUser: User | null) => {
+      const nextUserId = currentUser?.id ?? null;
+      const userChanged = profileInitialization.setActiveUser(nextUserId);
+      setUser(currentUser);
+
+      if (!currentUser) {
+        lastInitializedUserIdRef.current = null;
+        setProfile(null);
+        setAccount(null);
+        setStatusDetail(null);
+        setProfileLoading(false);
+      } else {
+        if (userChanged) {
+          lastInitializedUserIdRef.current = null;
+          setProfile(null);
+          setAccount(null);
+        }
+        if (currentUser.id !== lastInitializedUserIdRef.current) {
+          void fetchProfile(currentUser.id);
+        }
+      }
+
+      setLoading(false);
+    },
+    [fetchProfile, profileInitialization],
+  );
 
   useEffect(() => {
     const supabase = createClient();
@@ -318,6 +362,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, 3000);
 
     const init = async () => {
+      const eventVersionAtStart = authEventVersionRef.current;
       try {
         const {
           data: { session },
@@ -326,22 +371,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (error) console.error("[AuthProvider] getSession error:", error.message);
 
-        if (!mounted) return;
+        if (!mounted || eventVersionAtStart !== authEventVersionRef.current)
+          return;
         const currentUser = session?.user ?? null;
-        setUser(currentUser);
-
-        if (currentUser) {
-          // Don't block session loading on profile fetch — chrome
-          // (header, sidebar) can render from the user object alone,
-          // profile enriches async. Callers that need to branch on
-          // profile data gate on `profileLoading` instead.
-          fetchProfile(currentUser.id);
-        } else {
-          // No user → no profile to load. Flip profileLoading off so
-          // pages that gate on it don't wait forever on the logged-out
-          // path (the route guard or redirect should fire instead).
-          setProfileLoading(false);
-        }
+        applyAuthUser(currentUser);
       } catch (err) {
         console.error("[AuthProvider] init threw:", err);
       } finally {
@@ -356,29 +389,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!mounted) return;
+      authEventVersionRef.current += 1;
       const currentUser = session?.user ?? null;
-      setUser(currentUser);
-
-      if (currentUser) {
-        if (currentUser.id !== lastFetchedUserIdRef.current) {
-          fetchProfile(currentUser.id);
-        }
-      } else {
-        lastFetchedUserIdRef.current = null;
-        setProfile(null);
-        setAccount(null);
-        setProfileLoading(false);
-      }
-
-      setLoading(false);
+      applyAuthUser(currentUser);
     });
 
     return () => {
       mounted = false;
+      profileInitialization.invalidate();
       clearTimeout(safetyTimer);
       subscription.unsubscribe();
     };
-  }, [fetchProfile]);
+  }, [applyAuthUser, profileInitialization]);
 
   const signOut = useCallback(async () => {
     const supabase = createClient();
