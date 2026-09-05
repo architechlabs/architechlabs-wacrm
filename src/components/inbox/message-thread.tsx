@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { readWithTimeout } from "@/lib/http/read-with-timeout";
 import { useAuth } from "@/hooks/use-auth";
 import { usePresence } from "@/hooks/use-presence";
 import { PresenceDot } from "@/components/presence/presence-dot";
@@ -181,6 +182,8 @@ export function MessageThread({
   const { user } = useAuth();
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [retryRead, setRetryRead] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const templateRequestIdRef = useRef<string | null>(null);
@@ -313,35 +316,44 @@ export function MessageThread({
 
     const supabase = createClient();
     let cancelled = false;
+    const controller = new AbortController();
 
     (async () => {
       setLoading(true);
+      setLoadError(false);
 
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: true });
+      try {
+        const { data, error } = await readWithTimeout(signal => supabase
+          .from("messages")
+          .select("*")
+          .eq("conversation_id", conversationId)
+          .order("created_at", { ascending: true })
+          .abortSignal(signal), controller.signal);
 
-      if (cancelled) return;
+        if (cancelled) return;
 
-      if (error) {
-        console.error("Failed to fetch messages:", error);
-      } else {
-        onMessagesLoadedRef.current(data ?? []);
+        if (error) {
+          throw new Error('Message read failed');
+        } else {
+          onMessagesLoadedRef.current(data ?? []);
+        }
+
+      } catch {
+        if (!cancelled) setLoadError(true);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      if (!cancelled) setLoading(false);
     })();
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus —
     // realtime is best-effort and any message events sent while the WS
     // was disconnected or throttled are otherwise lost.
-  }, [conversationId, resyncToken]);
+  }, [conversationId, resyncToken, retryRead]);
 
   // Reactions fetch — pulls the current state from the DB. Kept separate
   // from the channel subscription below so a `resyncToken` bump just
@@ -1100,11 +1112,17 @@ export function MessageThread({
 
       {/* Messages Area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
-        {loading ? (
+        {loadError && (
+          <div role="alert" className="mb-3 text-sm text-muted-foreground">
+            Messages could not be refreshed. Your saved messages have not been removed.
+            <button type="button" className="ml-2 underline" onClick={() => setRetryRead(n => n + 1)}>Retry</button>
+          </div>
+        )}
+        {loading && messages.length === 0 ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           </div>
-        ) : messages.length === 0 ? (
+        ) : messages.length === 0 && !loadError ? (
           <div className="flex flex-col items-center justify-center py-12">
             <p className="text-sm text-muted-foreground">{t("noMessagesYet")}</p>
             <p className="text-xs text-muted-foreground">

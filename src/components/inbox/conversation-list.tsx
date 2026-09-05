@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { readWithTimeout } from "@/lib/http/read-with-timeout";
 import {
   CONVERSATION_SELECT,
   matchesContactFilters,
@@ -70,6 +71,8 @@ export function ConversationList({
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [retryRead, setRetryRead] = useState(0);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
   // Broadcast audience filtering. Company is an exact match on the field.
@@ -97,38 +100,39 @@ export function ConversationList({
   useEffect(() => {
     const supabase = createClient();
     let cancelled = false;
+    const controller = new AbortController();
 
     (async () => {
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .order("last_message_at", { ascending: false });
+      setLoadError(false);
+      try {
+        const { data, error } = await readWithTimeout(signal => supabase
+          .from("conversations")
+          .select(CONVERSATION_SELECT)
+          .order("last_message_at", { ascending: false })
+          .abortSignal(signal), controller.signal);
 
-      if (cancelled) return;
+        if (cancelled) return;
 
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields explicitly
-        console.error("Failed to fetch conversations:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        setLoading(false);
-        return;
+        if (error) {
+          throw new Error('Conversation read failed');
+        }
+
+        onConversationsLoadedRef.current(normalizeConversations(data ?? []));
+      } catch {
+        if (!cancelled) setLoadError(true);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      onConversationsLoadedRef.current(normalizeConversations(data ?? []));
-      setLoading(false);
     })();
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus — catches
     // up on any events sent while the WS was disconnected or throttled.
-  }, [resyncToken]);
+  }, [resyncToken, retryRead]);
 
   // Tag definitions for the filter picker — loaded once so labels/colours
   // stay stable regardless of which conversations happen to be loaded.
@@ -416,11 +420,17 @@ export function ConversationList({
           space — the list then overflows and gets clipped by the
           parent's overflow-hidden with no scrollbar (issue #229). */}
       <ScrollArea className="min-h-0 flex-1">
+        {loadError && (
+          <div role="alert" className="p-3 text-sm text-muted-foreground">
+            Conversations could not be refreshed. Your saved conversations have not been removed.
+            <Button variant="outline" size="sm" onClick={() => setRetryRead(n => n + 1)}>Retry</Button>
+          </div>
+        )}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && !loadError ? (
           <div className="px-4 py-12 text-center">
             <p className="text-sm text-muted-foreground">{t("noConversations")}</p>
           </div>

@@ -8,7 +8,7 @@ describe('readWhatsappConnectionStatus', () => {
       data: { status: 'connected' },
       error: null,
     }));
-    const eq = vi.fn(() => ({ maybeSingle }));
+    const eq = vi.fn(() => ({ abortSignal: () => ({ maybeSingle }) }));
     const select = vi.fn(() => ({ eq }));
     const from = vi.fn(() => ({ select }));
     const supabase = { from } as unknown as SupabaseClient;
@@ -27,7 +27,7 @@ describe('readWhatsappConnectionStatus', () => {
       from: () => ({
         select: () => ({
           eq: () => ({
-            maybeSingle: async () => ({ data: null, error: null }),
+            abortSignal: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
           }),
         }),
       }),
@@ -36,5 +36,15 @@ describe('readWhatsappConnectionStatus', () => {
     await expect(
       readWhatsappConnectionStatus(supabase, 'account-a')
     ).resolves.toBe(false);
+  });
+
+  it('does not misreport a database error as disconnected credentials', async () => {
+    const query = {
+      select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(),
+      abortSignal: vi.fn().mockReturnThis(),
+      maybeSingle: async () => ({ data: null, error: { message: 'database unavailable' } }),
+    };
+    const supabase = { from: () => query } as unknown as SupabaseClient;
+    await expect(readWhatsappConnectionStatus(supabase, 'account-a')).rejects.toThrow('WhatsApp connection status unavailable');
   });
 });

@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useMemo, type ReactNode } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
 import { useAuth } from '@/hooks/use-auth';
@@ -40,7 +40,6 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const { defaultCurrency } = useAuth();
   const { mode } = useTheme();
@@ -55,7 +54,9 @@ function SettingsPageInner() {
   const go = (next: SettingsSection) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', next);
-    router.replace(`/settings?${params.toString()}`, { scroll: false });
+    // Tab selection is entirely client-rendered. Sync the deep link without
+    // waiting for another Worker auth/RSC request on each Settings click.
+    window.history.replaceState(null, '', `/settings?${params.toString()}`);
   };
 
   // Cheap, fetch-free rail hints. The Overview landing carries the

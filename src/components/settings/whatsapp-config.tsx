@@ -30,11 +30,12 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
+import { readWhatsAppConfig, type SavedWhatsAppConfig } from '@/lib/settings/read-whatsapp-config';
+import { readWithTimeout } from '@/lib/http/read-with-timeout';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
-type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
+type ConnectionStatus = 'connected' | 'saved' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 
 export function WhatsAppConfig() {
@@ -58,7 +59,10 @@ export function WhatsAppConfig() {
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [showToken, setShowToken] = useState(false);
-  const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
+  const [config, setConfig] = useState<SavedWhatsAppConfig | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [configAccountId, setConfigAccountId] = useState<string | null>(null);
+  const configReadRef = useRef<AbortController | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -112,7 +116,12 @@ export function WhatsAppConfig() {
       : '';
 
   const fetchConfig = useCallback(async (acctId: string) => {
+    configReadRef.current?.abort();
+    const request = new AbortController();
+    configReadRef.current = request;
     setLoading(true);
+    setTesting(false);
+    setLoadError(false);
     try {
       // Load form values from Supabase (shows what's in DB).
       // Switched from `user_id` (which would only match the row's
@@ -120,15 +129,9 @@ export function WhatsAppConfig() {
       // account sees the same saved configuration. UNIQUE(account_id)
       // on the table guarantees the .maybeSingle() return type
       // remains accurate.
-      const { data, error } = await supabase
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', acctId)
-        .maybeSingle();
-
-      if (error) {
-        console.error('Failed to load config row:', error);
-      }
+      const data = await readWhatsAppConfig(supabase, acctId, request.signal);
+      if (request.signal.aborted) return;
+      setConfigAccountId(acctId);
 
       if (data) {
         setConfig(data);
@@ -154,37 +157,25 @@ export function WhatsAppConfig() {
       // Clear any stale probe result when reloading the row.
       setRegistrationProbe(null);
 
-      // Then verify health via the API (decrypts token + pings Meta)
-      if (data) {
-        try {
-          const res = await fetch('/api/whatsapp/config', { method: 'GET' });
-          const payload = await res.json();
-
-          if (payload.connected) {
-            setConnectionStatus('connected');
-            setResetReason(null);
-            setStatusMessage('');
-          } else {
-            setConnectionStatus('disconnected');
-            setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
-            setStatusMessage(payload.message || '');
-          }
-        } catch (err) {
-          console.error('Health check failed:', err);
-          setConnectionStatus('disconnected');
-        }
-      } else {
-        setConnectionStatus('disconnected');
-        setResetReason(null);
-        setStatusMessage('');
-      }
-    } catch (err) {
-      console.error('fetchConfig error:', err);
-      toast.error('Failed to load WhatsApp configuration');
+      // Opening Settings is a metadata read, not a live Meta health check.
+      // The explicit Test API Connection button still validates credentials.
+      setConnectionStatus(data ? 'saved' : 'disconnected');
+      setResetReason(null);
+      setStatusMessage('');
+    } catch {
+      if (!request.signal.aborted) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
     }
   }, [supabase]);
+
+  // Cancel a pending read on account change/unmount before it can fill a new
+  // account's form. Keep the separate load guard so token refreshes don't
+  // overwrite unsaved edits.
+  useEffect(() => {
+    loadedAccountIdRef.current = null;
+    return () => { configReadRef.current?.abort(); };
+  }, [accountId, user?.id]);
 
   useEffect(() => {
     // Need both the auth session (`!authLoading`) AND the profile
@@ -227,6 +218,7 @@ export function WhatsAppConfig() {
   }
 
   async function handleSave() {
+    if (loadError || loading || !accountId) return;
     if (!phoneNumberId.trim()) {
       toast.error('Phone Number ID is required');
       return;
@@ -255,14 +247,6 @@ export function WhatsAppConfig() {
 
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
-      } else if (config) {
-        // Existing config — reuse stored encrypted token by decrypting on the
-        // server. But our POST handler requires an access_token to verify
-        // with Meta. If the user didn't change the token, we need to signal
-        // that. Simplest: require token re-entry if they're updating.
-        toast.error('Please re-enter the Access Token to save changes');
-        setSaving(false);
-        return;
       }
 
       const res = await fetch('/api/whatsapp/config', {
@@ -322,10 +306,21 @@ export function WhatsAppConfig() {
   }
 
   async function handleTestConnection() {
+    const request = configReadRef.current;
+    if (!request || request.signal.aborted) return;
     try {
       setTesting(true);
-      const res = await fetch('/api/whatsapp/config', { method: 'GET' });
-      const payload = await res.json();
+      const payload = await readWithTimeout(async signal => {
+        const res = await fetch('/api/whatsapp/config', { method: 'GET', signal });
+        if (!res.ok) throw new Error('Connection check unavailable');
+        const result = await res.json();
+        if (['db_error', 'unknown', 'no_account'].includes(result.reason)) {
+          throw new Error('Connection check unavailable');
+        }
+        return result;
+      }, request.signal);
+
+      if (request.signal.aborted) return;
 
       if (payload.connected) {
         setConnectionStatus('connected');
@@ -342,12 +337,14 @@ export function WhatsAppConfig() {
         setStatusMessage(payload.message || '');
         toast.error(payload.message || 'API connection failed');
       }
-    } catch (err) {
-      console.error('Test connection error:', err);
-      setConnectionStatus('disconnected');
+    } catch {
+      if (request.signal.aborted) return;
+      setConnectionStatus('unknown');
+      setResetReason(null);
+      setStatusMessage('Connection check unavailable. Your saved settings have not been changed.');
       toast.error('Connection test failed. Check network and try again.');
     } finally {
-      setTesting(false);
+      if (!request.signal.aborted) setTesting(false);
     }
   }
 
@@ -429,6 +426,23 @@ export function WhatsAppConfig() {
     );
   }
 
+  // Do not present an empty, writable setup form when account/config loading
+  // failed: doing so implies the user's saved credentials were deleted.
+  if (loadError || !accountId || configAccountId !== accountId) {
+    return (
+      <section>
+        <SettingsPanelHead title={t('title')} description={t('description')} />
+        <Alert>
+          <AlertTitle>Saved settings could not be loaded</AlertTitle>
+          <AlertDescription>
+            Your configuration has not been changed. Check your connection and retry.
+          </AlertDescription>
+          {accountId && <Button variant="outline" onClick={() => void fetchConfig(accountId)}>Retry loading settings</Button>}
+        </Alert>
+      </section>
+    );
+  }
+
   const showResetBanner = resetReason === 'token_corrupted';
 
   return (
@@ -478,19 +492,21 @@ export function WhatsAppConfig() {
         {/* Connection Status */}
         <Alert className="bg-card border-border">
           <div className="flex items-center gap-2">
-            {connectionStatus === 'connected' ? (
+            {connectionStatus === 'connected' || connectionStatus === 'saved' ? (
               <CheckCircle2 className="size-4 text-primary" />
+            ) : connectionStatus === 'unknown' ? (
+              <AlertTriangle className="size-4 text-muted-foreground" />
             ) : (
               <XCircle className="size-4 text-red-500" />
             )}
             <AlertTitle className="text-foreground mb-0">
-              {connectionStatus === 'connected' ? t('credentialsValid') : t('notConnected')}
+              {connectionStatus === 'connected' ? t('credentialsValid') : connectionStatus === 'saved' ? 'WhatsApp configuration saved for your workspace' : connectionStatus === 'unknown' ? 'Connection check unavailable' : t('notConnected')}
             </AlertTitle>
           </div>
           <AlertDescription className="text-muted-foreground">
             {connectionStatus === 'connected'
               ? t('connectedDesc')
-              : statusMessage ||
+              : statusMessage || (connectionStatus === 'saved' ? 'Your team shares these saved credentials. Refreshing or signing in does not require reconfiguration. Use Test API Connection for a live check.' : connectionStatus === 'unknown' ? 'Your saved credentials have not been changed. Retry the connection check; do not reset your configuration.' : '') ||
                 t('notConnectedDesc')}
           </AlertDescription>
         </Alert>
@@ -671,6 +687,7 @@ export function WhatsAppConfig() {
               />
               <p className="text-xs text-muted-foreground">
                 {t('webhookVerifyTokenHint')}
+                {config && ' Leave blank to keep the saved verify token.'}
               </p>
             </div>
 

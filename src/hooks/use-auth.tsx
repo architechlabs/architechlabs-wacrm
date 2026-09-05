@@ -21,6 +21,7 @@ import {
   type AccountRole,
 } from "@/lib/auth/roles";
 import { ProfileInitializationCoordinator } from "@/lib/auth/profile-initialization";
+import { readWithTimeout } from "@/lib/http/read-with-timeout";
 
 interface Profile {
   id: string;
@@ -194,13 +195,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
       let data: ProfileRow | null = null;
       for (let attempt = 1; ; attempt++) {
-        const result = await supabase
+        const result = await readWithTimeout(signal => supabase
           .from("profiles")
           .select(
             "id, full_name, email, avatar_url, role, beta_features, account_id, account_role",
           )
           .eq("user_id", userId)
-          .maybeSingle();
+          .abortSignal(signal)
+          .maybeSingle());
 
         if (!result.error) {
           data = result.data;
@@ -242,13 +244,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // account name lookup itself can't.
         let accountRow: AccountSummary | null = null;
         if (data.account_id) {
-          const { data: account, error: accountErr } = await supabase
+          const { data: account, error: accountErr } = await readWithTimeout(signal => supabase
             .from("accounts")
             // default_currency added in migration 021; narrowed to the
             // USD fallback below for older schemas where it reads null.
             .select("id, name, default_currency")
             .eq("id", data.account_id)
-            .maybeSingle();
+            .abortSignal(signal)
+            .maybeSingle()).catch(() => ({
+              data: null,
+              error: { message: 'Account summary could not be loaded', details: '', hint: '', code: 'READ_FAILED' },
+            }));
           if (accountErr) {
             console.error("[AuthProvider] fetchAccount error:", {
               message: accountErr.message,
@@ -389,6 +395,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!mounted) return;
+      // A resolved auth event supersedes getSession; don't let its watchdog
+      // prematurely mark an in-flight profile read as finished.
+      clearTimeout(safetyTimer);
       authEventVersionRef.current += 1;
       const currentUser = session?.user ?? null;
       applyAuthUser(currentUser);

@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useState, useCallback, useEffect, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -41,7 +41,8 @@ function InboxPageInner() {
   const canSendMessages = useCan("send-messages");
   const { user, accountId, profileLoading } = useAuth();
   const userId = user?.id;
-  const router = useRouter();
+  const [connectionCheckFailed, setConnectionCheckFailed] = useState(false);
+  const [connectionRetry, setConnectionRetry] = useState(0);
   const searchParams = useSearchParams();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
@@ -189,7 +190,10 @@ function InboxPageInner() {
     }
 
     let cancelled = false;
+    const controller = new AbortController();
     const checkConnection = async () => {
+      setConnectionCheckFailed(false);
+      try {
       const supabase = createClient();
 
       // whatsapp_config is one-row-per-account post-multi-user, so
@@ -201,15 +205,23 @@ function InboxPageInner() {
       const connected = await readWhatsappConnectionStatus(
         supabase,
         accountId,
+        controller.signal,
       );
       if (!cancelled) setWhatsappConnected(connected);
+      } catch {
+        if (!cancelled) {
+          setWhatsappConnected(null);
+          setConnectionCheckFailed(true);
+        }
+      }
     };
 
     void checkConnection();
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [accountId, profileLoading, userId]);
+  }, [accountId, profileLoading, userId, connectionRetry]);
 
   // Handle realtime message events
   const handleMessageEvent = useCallback(
@@ -472,7 +484,7 @@ function InboxPageInner() {
         ),
       );
       // Record the selection on the deep-link ref BEFORE we change the
-      // URL. The router.replace below flips `deepLinkConvId`, which can
+      // URL. The history update below flips `deepLinkConvId`, which can
       // in turn cause ConversationList to refetch and eventually call
       // handleConversationsLoaded again. Without this line, the ref
       // still points at the previous value, the auto-select block
@@ -481,10 +493,10 @@ function InboxPageInner() {
       autoSelectedForDeepLinkRef.current = conv.id;
       // Reflect the selection in the URL so a refresh lands the user
       // back in the same thread, and so copy-paste links work. Use
-      // replace() to avoid polluting browser history with every click.
-      router.replace(`/inbox?c=${conv.id}`, { scroll: false });
+      // replaceState avoids a Worker/RSC request for client-only selection.
+      window.history.replaceState(null, '', `/inbox?c=${encodeURIComponent(conv.id)}`);
     },
-    [activeConversation?.id, router]
+    [activeConversation?.id]
   );
 
   // Mobile "back" — deselect the conversation so the list pane comes
@@ -497,8 +509,8 @@ function InboxPageInner() {
     // Clearing the ref lets the deep-link auto-selector fire again if
     // the user later visits /inbox?c=<same-id> — desirable UX.
     autoSelectedForDeepLinkRef.current = null;
-    router.replace("/inbox", { scroll: false });
-  }, [router]);
+    window.history.replaceState(null, '', '/inbox');
+  }, []);
 
   const handleConversationReady = useCallback(
     async (conversationId: string) => {
@@ -524,11 +536,11 @@ function InboxPageInner() {
       setActiveContact(conversation.contact ?? null);
       setMessages([]);
       autoSelectedForDeepLinkRef.current = conversation.id;
-      router.replace(`/inbox?c=${conversation.id}`, { scroll: false });
+      window.history.replaceState(null, '', `/inbox?c=${encodeURIComponent(conversation.id)}`);
       setResyncToken((n) => n + 1);
       toast.success(t("conversationStarted"));
     },
-    [router, t],
+    [t],
   );
 
 
@@ -601,6 +613,12 @@ function InboxPageInner() {
           <p className="text-xs text-amber-400">
             {t("whatsappNotConnected")}
           </p>
+        </div>
+      )}
+      {connectionCheckFailed && (
+        <div role="status" className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+          Connection status could not be checked. Your configuration has not been changed.
+          <button type="button" className="ml-2 underline" onClick={() => setConnectionRetry(n => n + 1)}>Retry</button>
         </div>
       )}
 

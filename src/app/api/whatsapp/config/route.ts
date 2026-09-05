@@ -6,7 +6,9 @@ import {
   subscribeWabaToApp,
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
-import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
+import { decrypt } from '@/lib/whatsapp/encryption'
+import { resolveSavedCredentials, SavedCredentialsError } from '@/lib/whatsapp/saved-credentials'
+import { hasMinRole, isAccountRole } from '@/lib/auth/roles'
 
 /**
  * Resolve the caller's account_id from their profile. Inlined here
@@ -21,13 +23,15 @@ import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 async function resolveAccountId(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
+  requireAdmin = false,
 ): Promise<string | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('account_id')
+    .select('account_id, account_role')
     .eq('user_id', userId)
     .maybeSingle()
   if (error || !data?.account_id) return null
+  if (requireAdmin && (!isAccountRole(data.account_role) || !hasMinRole(data.account_role, 'admin'))) return null
   return data.account_id as string
 }
 
@@ -176,10 +180,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const accountId = await resolveAccountId(supabase, user.id)
+    const accountId = await resolveAccountId(supabase, user.id, true)
     if (!accountId) {
       return NextResponse.json(
-        { error: 'Your profile is not linked to an account.' },
+        { error: 'An account owner or administrator must update WhatsApp settings.' },
         { status: 403 },
       )
     }
@@ -187,12 +191,23 @@ export async function POST(request: Request) {
     const body = await request.json()
     const { phone_number_id, waba_id, access_token, verify_token, pin } = body
 
-    if (!access_token || !phone_number_id) {
+    if (typeof phone_number_id !== 'string' || !phone_number_id.trim()) {
       return NextResponse.json(
-        { error: 'access_token and phone_number_id are required' },
+        { error: 'phone_number_id is required' },
         { status: 400 }
       )
     }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('whatsapp_config')
+      .select('id, access_token, verify_token, registered_at, phone_number_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (existingError) {
+      return NextResponse.json({ error: 'Saved configuration could not be loaded. Nothing was changed. Please retry.' }, { status: 503 })
+    }
+    const { accessToken, encryptedAccessToken, encryptedVerifyToken } =
+      resolveSavedCredentials({ access_token, verify_token }, existing)
 
     if (pin !== undefined && pin !== null && pin !== '') {
       if (typeof pin !== 'string' || !/^\d{6}$/.test(pin)) {
@@ -240,7 +255,7 @@ export async function POST(request: Request) {
     try {
       phoneInfo = await verifyPhoneNumber({
         phoneNumberId: phone_number_id,
-        accessToken: access_token,
+        accessToken,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
@@ -251,33 +266,9 @@ export async function POST(request: Request) {
       )
     }
 
-    // Encrypt sensitive tokens before storing
-    let encryptedAccessToken: string
-    let encryptedVerifyToken: string | null
-    try {
-      encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown encryption error'
-      console.error('Encryption failed:', message)
-      return NextResponse.json(
-        {
-          error:
-            'Failed to encrypt token. Check that ENCRYPTION_KEY is a valid 64-character hex string in your environment variables.',
-        },
-        { status: 500 }
-      )
-    }
-
     // Look up any pre-existing row for this account so we know whether
     // this number is already registered with Meta — if so we can skip
     // /register when the user didn't provide a PIN this time around.
-    const { data: existing } = await supabase
-      .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id')
-      .eq('account_id', accountId)
-      .maybeSingle()
-
     const sameNumber =
       existing?.phone_number_id === phone_number_id &&
       existing?.registered_at != null
@@ -313,7 +304,7 @@ export async function POST(request: Request) {
         try {
           await registerPhoneNumber({
             phoneNumberId: phone_number_id,
-            accessToken: access_token,
+            accessToken,
             pin,
           })
           registeredAt = new Date().toISOString()
@@ -338,7 +329,7 @@ export async function POST(request: Request) {
       try {
         await subscribeWabaToApp({
           wabaId: waba_id,
-          accessToken: access_token,
+          accessToken,
         })
         subscribedAppsAt = new Date().toISOString()
       } catch (err) {
@@ -426,6 +417,9 @@ export async function POST(request: Request) {
       phone_info: phoneInfo,
     })
   } catch (error) {
+    if (error instanceof SavedCredentialsError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
     console.error('Error in WhatsApp config POST:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

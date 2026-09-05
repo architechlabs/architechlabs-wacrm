@@ -313,9 +313,16 @@ export async function sendMessageToConversation(
     .from('whatsapp_config')
     .select('*')
     .eq('account_id', accountId)
-    .single();
+    .maybeSingle();
 
-  if (configError || !config) {
+  if (configError) {
+    throw new SendMessageError(
+      'whatsapp_config_unavailable',
+      'Saved WhatsApp settings could not be loaded. Please retry later; do not reconfigure your credentials.',
+      503,
+    );
+  }
+  if (!config) {
     throw new SendMessageError(
       'whatsapp_not_configured',
       'WhatsApp not configured. Please set up your WhatsApp integration first.',

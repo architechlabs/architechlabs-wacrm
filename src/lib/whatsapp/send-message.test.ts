@@ -210,6 +210,8 @@ function sendPathDb(
   captured: CapturedWrites,
   options: {
     latestTemplateMessage?: Record<string, unknown> | null;
+    configError?: { code: string };
+    missingConfig?: boolean;
   } = {}
 ): SupabaseClient {
   const conversation = {
@@ -243,7 +245,10 @@ function sendPathDb(
           if (table === 'messages') captured.messageUpdate = row;
           return builder;
         },
-        maybeSingle: async () => ({
+        maybeSingle: async () => table === 'whatsapp_config' ? {
+          data: options.configError || options.missingConfig ? null : config,
+          error: options.configError ?? null,
+        } : ({
           data:
             table === 'messages' && filters.content_type === 'template'
               ? (options.latestTemplateMessage ?? null)
@@ -283,6 +288,21 @@ const TEMPLATE_ROW = {
 };
 
 describe('sendMessageToConversation — template persistence (#483)', () => {
+  it('reports a transient shared-config read failure without requesting credential setup', async () => {
+    const captured: CapturedWrites = {};
+    await expect(sendMessageToConversation(
+      sendPathDb([], captured, { configError: { code: 'NETWORK_ERROR' } }),
+      'acct-1', { conversationId: 'cv-1', messageType: 'text', contentText: 'test' },
+    )).rejects.toMatchObject({ status: 503, code: 'whatsapp_config_unavailable' });
+    expect(captured.message).toBeUndefined();
+  });
+
+  it('requests initial setup only when the shared configuration really is absent', async () => {
+    await expect(sendMessageToConversation(
+      sendPathDb([], {}, { missingConfig: true }),
+      'acct-1', { conversationId: 'cv-1', messageType: 'text', contentText: 'test' },
+    )).rejects.toMatchObject({ status: 400, code: 'whatsapp_not_configured' });
+  });
   it('stores the substituted body when the caller sends no text', async () => {
     const captured: CapturedWrites = {};
     const result = await sendMessageToConversation(
