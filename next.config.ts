@@ -76,6 +76,14 @@ const nextConfig: NextConfig = {
   // Harmless outside Docker: `next start` keeps working as before.
   output: "standalone",
 
+  // Reuse visited page payloads in this tab for short repeat navigations.
+  // This is Next's in-memory Router Cache, NOT an HTTP/CDN or data cache.
+  // Client-side Supabase reads/realtime and API authorization stay fresh;
+  // reloads and login/logout document navigations discard this cache.
+  experimental: {
+    staleTimes: { dynamic: 30 },
+  },
+
   /**
    * Cross-origin dev access (Next.js 16).
    *
