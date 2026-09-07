@@ -1,18 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AsyncLocalStorage } from "node:async_hooks";
-import { NextRequest } from "next/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { NextRequest } from 'next/server';
 import {
   API_CACHE_CONTROL,
   PRIVATE_CACHE_CONTROL,
   ROOT_REDIRECT,
-} from "@/lib/http/request-policy";
+} from '@/lib/http/request-policy';
 
 Object.assign(globalThis, { AsyncLocalStorage });
 const {
   getRedirectUrl,
   unstable_doesMiddlewareMatch,
   unstable_getResponseFromNextConfig,
-} = await import("next/experimental/testing/server");
+} = await import('next/experimental/testing/server');
 
 // --- Scenario knobs the mock reads -----------------------------------------
 // `mockUser`         — what getUser() resolves to (a refreshed session ⇒ user,
@@ -31,7 +31,7 @@ let refreshedCookies: Array<{
   options: Record<string, unknown>;
 }> = [];
 
-vi.mock("@supabase/ssr", () => ({
+vi.mock('@supabase/ssr', () => ({
   createServerClient: (
     _url: string,
     _key: string,
@@ -54,139 +54,153 @@ vi.mock("@supabase/ssr", () => ({
 }));
 
 // Imported after the mock is registered.
-const { config, middleware } = await import("./middleware");
+const { config, middleware } = await import('./middleware');
 
 beforeEach(() => {
-  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://test.supabase.co";
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test.supabase.co';
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'anon-key';
   mockUser = null;
   mockAuthError = null;
   mockAuthException = null;
   getUserCallCount = 0;
   refreshedCookies = [];
-  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 const ROTATED = {
-  name: "sb-test-auth-token",
-  value: "rotated-refresh-token",
-  options: { path: "/", httpOnly: true },
+  name: 'sb-test-auth-token',
+  value: 'rotated-refresh-token',
+  options: { path: '/', httpOnly: true },
 };
 
-describe("middleware — refreshed auth cookies survive redirects", () => {
-  it("carries the rotated token when redirecting a signed-in user off /login", async () => {
-    mockUser = { id: "user-1" };
+describe('middleware — refreshed auth cookies survive redirects', () => {
+  it('leaves OAuth code verification to the callback without clearing its PKCE cookie', async () => {
+    mockAuthError = new Error('Auth session missing');
+    const request = new NextRequest(
+      'https://app.test/auth/callback?code=test-code',
+      {
+        headers: { cookie: 'sb-test-auth-token-code-verifier=test-verifier' },
+      }
+    );
+    const response = await middleware(request);
+    expect(getUserCallCount).toBe(0);
+    expect(response.cookies.getAll()).toEqual([]);
+    expect(response.headers.get('cache-control')).toBe(PRIVATE_CACHE_CONTROL);
+    expect(response.headers.get('location')).toBeNull();
+  });
+  it('carries the rotated token when redirecting a signed-in user off /login', async () => {
+    mockUser = { id: 'user-1' };
     refreshedCookies = [ROTATED];
 
-    const res = await middleware(new NextRequest("https://app.test/login"));
+    const res = await middleware(new NextRequest('https://app.test/login'));
 
     // Redirect to /dashboard…
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toContain("/dashboard");
+    expect(res.headers.get('location')).toContain('/dashboard');
     // …and the rotated cookie MUST ride along, otherwise the browser keeps
     // replaying the now-consumed refresh token and the session wedges until
     // the user manually clears cookies.
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
-    expect(res.headers.get("cache-control")).toBe(PRIVATE_CACHE_CONTROL);
+    expect(res.headers.get('cache-control')).toBe(PRIVATE_CACHE_CONTROL);
   });
 
-  it("carries the rotated token when redirecting an unauth user to /login", async () => {
+  it('carries the rotated token when redirecting an unauth user to /login', async () => {
     mockUser = null;
     // Even on the logged-out path getUser() may emit cookie writes (e.g.
     // clearing a dead session); those must not be dropped on the redirect.
-    refreshedCookies = [{ ...ROTATED, value: "cleared" }];
+    refreshedCookies = [{ ...ROTATED, value: 'cleared' }];
 
-    const res = await middleware(new NextRequest("https://app.test/dashboard"));
+    const res = await middleware(new NextRequest('https://app.test/dashboard'));
 
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toContain("/login");
-    expect(res.cookies.get(ROTATED.name)?.value).toBe("cleared");
-    expect(res.headers.get("cache-control")).toBe(PRIVATE_CACHE_CONTROL);
+    expect(res.headers.get('location')).toContain('/login');
+    expect(res.cookies.get(ROTATED.name)?.value).toBe('cleared');
+    expect(res.headers.get('cache-control')).toBe(PRIVATE_CACHE_CONTROL);
   });
 
-  it("redirects a signed-in user with an invite token to /join/<token>", async () => {
-    mockUser = { id: "user-1" };
+  it('redirects a signed-in user with an invite token to /join/<token>', async () => {
+    mockUser = { id: 'user-1' };
     refreshedCookies = [ROTATED];
 
     const res = await middleware(
-      new NextRequest("https://app.test/login?invite=abc123")
+      new NextRequest('https://app.test/login?invite=abc123')
     );
 
-    expect(res.headers.get("location")).toContain("/join/abc123");
+    expect(res.headers.get('location')).toContain('/join/abc123');
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
-    expect(res.headers.get("cache-control")).toBe(PRIVATE_CACHE_CONTROL);
+    expect(res.headers.get('cache-control')).toBe(PRIVATE_CACHE_CONTROL);
   });
 
-  it("passes through (no redirect) for a signed-in user on a protected page", async () => {
-    mockUser = { id: "user-1" };
+  it('passes through (no redirect) for a signed-in user on a protected page', async () => {
+    mockUser = { id: 'user-1' };
     refreshedCookies = [ROTATED];
 
-    const res = await middleware(new NextRequest("https://app.test/dashboard"));
+    const res = await middleware(new NextRequest('https://app.test/dashboard'));
 
     // No redirect — the normal NextResponse.next() already carries cookies.
-    expect(res.headers.get("location")).toBeNull();
+    expect(res.headers.get('location')).toBeNull();
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
-    expect(res.headers.get("cache-control")).toBe(PRIVATE_CACHE_CONTROL);
+    expect(res.headers.get('cache-control')).toBe(PRIVATE_CACHE_CONTROL);
   });
 });
 
-describe("root redirect avoids duplicate middleware auth", () => {
+describe('root redirect avoids duplicate middleware auth', () => {
   const nextConfig = {
     async redirects() {
       return [ROOT_REDIRECT];
     },
   };
 
-  it("sends an unauthenticated root request through dashboard auth once", async () => {
+  it('sends an unauthenticated root request through dashboard auth once', async () => {
     expect(
       unstable_doesMiddlewareMatch({
         config,
         nextConfig: {},
-        url: "/",
+        url: '/',
       })
     ).toBe(false);
 
     const rootResponse = await unstable_getResponseFromNextConfig({
-      url: "https://app.test/",
+      url: 'https://app.test/',
       nextConfig,
     });
     expect(rootResponse.status).toBe(307);
-    expect(getRedirectUrl(rootResponse)).toBe("https://app.test/dashboard");
+    expect(getRedirectUrl(rootResponse)).toBe('https://app.test/dashboard');
 
     const dashboardResponse = await middleware(
-      new NextRequest("https://app.test/dashboard")
+      new NextRequest('https://app.test/dashboard')
     );
-    expect(dashboardResponse.headers.get("location")).toBe(
-      "https://app.test/login"
+    expect(dashboardResponse.headers.get('location')).toBe(
+      'https://app.test/login'
     );
     expect(getUserCallCount).toBe(1);
   });
 
-  it("sends an authenticated root request through dashboard auth once", async () => {
-    mockUser = { id: "user-1" };
+  it('sends an authenticated root request through dashboard auth once', async () => {
+    mockUser = { id: 'user-1' };
 
     const rootResponse = await unstable_getResponseFromNextConfig({
-      url: "https://app.test/",
+      url: 'https://app.test/',
       nextConfig,
     });
     expect(rootResponse.status).toBe(307);
-    expect(getRedirectUrl(rootResponse)).toBe("https://app.test/dashboard");
+    expect(getRedirectUrl(rootResponse)).toBe('https://app.test/dashboard');
 
     const dashboardResponse = await middleware(
-      new NextRequest("https://app.test/dashboard")
+      new NextRequest('https://app.test/dashboard')
     );
-    expect(dashboardResponse.headers.get("location")).toBeNull();
+    expect(dashboardResponse.headers.get('location')).toBeNull();
     expect(getUserCallCount).toBe(1);
   });
 
-  it("keeps protected, API, and webhook routes inside middleware", () => {
+  it('keeps protected, API, and webhook routes inside middleware', () => {
     for (const url of [
-      "/dashboard",
-      "/inbox",
-      "/api/whatsapp/config",
-      "/api/whatsapp/webhook",
+      '/dashboard',
+      '/inbox',
+      '/api/whatsapp/config',
+      '/api/whatsapp/webhook',
     ]) {
       expect(
         unstable_doesMiddlewareMatch({ config, nextConfig: {}, url }),
@@ -196,54 +210,54 @@ describe("root redirect avoids duplicate middleware auth", () => {
   });
 });
 
-describe("middleware — failed auth is controlled", () => {
+describe('middleware — failed auth is controlled', () => {
   const SESSION_COOKIE = {
-    name: "sb-test-auth-token",
-    value: "stale-session",
+    name: 'sb-test-auth-token',
+    value: 'stale-session',
   };
 
-  it("redirects a missing session from a protected route", async () => {
-    const res = await middleware(new NextRequest("https://app.test/dashboard"));
+  it('redirects a missing session from a protected route', async () => {
+    const res = await middleware(new NextRequest('https://app.test/dashboard'));
 
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("https://app.test/login");
+    expect(res.headers.get('location')).toBe('https://app.test/login');
     expect(console.error).not.toHaveBeenCalled();
   });
 
-  it("keeps an ordinary missing-session auth result quiet", async () => {
-    mockAuthError = new Error("Auth session missing");
+  it('keeps an ordinary missing-session auth result quiet', async () => {
+    mockAuthError = new Error('Auth session missing');
 
-    const res = await middleware(new NextRequest("https://app.test/dashboard"));
+    const res = await middleware(new NextRequest('https://app.test/dashboard'));
 
     expect(res.status).toBe(307);
     expect(console.error).not.toHaveBeenCalled();
   });
 
-  it("clears an expired or revoked session and redirects to login", async () => {
-    mockAuthError = new Error("Invalid Refresh Token: Already Used");
+  it('clears an expired or revoked session and redirects to login', async () => {
+    mockAuthError = new Error('Invalid Refresh Token: Already Used');
 
-    const req = new NextRequest("https://app.test/dashboard", {
+    const req = new NextRequest('https://app.test/dashboard', {
       headers: { cookie: `${SESSION_COOKIE.name}=${SESSION_COOKIE.value}` },
     });
     const res = await middleware(req);
 
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("https://app.test/login");
-    expect(res.cookies.get(SESSION_COOKIE.name)?.value).toBe("");
+    expect(res.headers.get('location')).toBe('https://app.test/login');
+    expect(res.cookies.get(SESSION_COOKIE.name)?.value).toBe('');
     expect(res.cookies.get(SESSION_COOKIE.name)?.maxAge).toBe(0);
   });
 
-  it("turns a thrown refresh failure into a redirect instead of rejecting", async () => {
-    const accessToken = "access-token-value-that-must-never-be-logged";
-    const refreshToken = "refresh-token-value-that-must-never-be-logged";
-    const cookieValue = "cookie-value-that-must-never-be-logged";
-    const supabaseKey = "supabase-api-key-that-must-never-be-logged";
+  it('turns a thrown refresh failure into a redirect instead of rejecting', async () => {
+    const accessToken = 'access-token-value-that-must-never-be-logged';
+    const refreshToken = 'refresh-token-value-that-must-never-be-logged';
+    const cookieValue = 'cookie-value-that-must-never-be-logged';
+    const supabaseKey = 'supabase-api-key-that-must-never-be-logged';
     mockAuthException = new TypeError(
       `refresh request failed; Authorization: Bearer ${accessToken}; ` +
         `refresh_token=${refreshToken}; cookie=${cookieValue}; api_key=${supabaseKey}`
     );
 
-    const req = new NextRequest("https://app.test/dashboard", {
+    const req = new NextRequest('https://app.test/dashboard', {
       headers: { cookie: `${SESSION_COOKIE.name}=${SESSION_COOKIE.value}` },
     });
     const responsePromise = middleware(req);
@@ -251,17 +265,17 @@ describe("middleware — failed auth is controlled", () => {
     const res = await responsePromise;
 
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe("https://app.test/login");
-    expect(res.cookies.get(SESSION_COOKIE.name)?.value).toBe("");
+    expect(res.headers.get('location')).toBe('https://app.test/login');
+    expect(res.cookies.get(SESSION_COOKIE.name)?.value).toBe('');
 
     expect(console.error).toHaveBeenCalledTimes(1);
     const [label, details] = vi.mocked(console.error).mock.calls[0];
-    expect(label).toBe("[middleware] Supabase auth validation threw");
+    expect(label).toBe('[middleware] Supabase auth validation threw');
     expect(details).toEqual({
-      errorName: "TypeError",
-      errorType: "Error",
-      message: expect.stringContaining("refresh request failed"),
-      pathname: "/dashboard",
+      errorName: 'TypeError',
+      errorType: 'Error',
+      message: expect.stringContaining('refresh request failed'),
+      pathname: '/dashboard',
     });
     const serializedDetails = JSON.stringify(details);
     expect(serializedDetails).not.toContain(accessToken);
@@ -270,35 +284,35 @@ describe("middleware — failed auth is controlled", () => {
     expect(serializedDetails).not.toContain(supabaseKey);
   });
 
-  it("does not redirect or share state between two valid session requests", async () => {
-    mockUser = { id: "same-user" };
+  it('does not redirect or share state between two valid session requests', async () => {
+    mockUser = { id: 'same-user' };
 
     const [sessionA, sessionB] = await Promise.all([
       middleware(
-        new NextRequest("https://app.test/dashboard", {
-          headers: { cookie: "sb-test-auth-token=session-a" },
+        new NextRequest('https://app.test/dashboard', {
+          headers: { cookie: 'sb-test-auth-token=session-a' },
         })
       ),
       middleware(
-        new NextRequest("https://app.test/dashboard", {
-          headers: { cookie: "sb-test-auth-token=session-b" },
+        new NextRequest('https://app.test/dashboard', {
+          headers: { cookie: 'sb-test-auth-token=session-b' },
         })
       ),
     ]);
 
-    expect(sessionA.headers.get("location")).toBeNull();
-    expect(sessionB.headers.get("location")).toBeNull();
+    expect(sessionA.headers.get('location')).toBeNull();
+    expect(sessionB.headers.get('location')).toBeNull();
   });
 
-  it("returns 401 instead of throwing for an authenticated API auth error", async () => {
-    mockAuthException = new TypeError("auth storage failed");
+  it('returns 401 instead of throwing for an authenticated API auth error', async () => {
+    mockAuthException = new TypeError('auth storage failed');
 
     const res = await middleware(
-      new NextRequest("https://app.test/api/whatsapp/config")
+      new NextRequest('https://app.test/api/whatsapp/config')
     );
 
     expect(res.status).toBe(401);
-    expect(res.headers.get("cache-control")).toBe(API_CACHE_CONTROL);
-    await expect(res.json()).resolves.toEqual({ error: "Unauthorized" });
+    expect(res.headers.get('cache-control')).toBe(API_CACHE_CONTROL);
+    await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
 });
