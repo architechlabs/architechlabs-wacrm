@@ -1,11 +1,13 @@
 import { createHmac } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   insertError: null as { code?: string; message: string } | null,
   inserts: [] as Record<string, unknown>[],
   updates: [] as Record<string, unknown>[],
   deletes: [] as string[],
+  status: 'processed',
+  updateThrows: false,
 }));
 
 vi.mock('@supabase/supabase-js', () => ({
@@ -14,13 +16,27 @@ vi.mock('@supabase/supabase-js', () => ({
       if (table !== 'razorpay_webhook_events')
         throw new Error(`unexpected table: ${table}`);
       return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { status: state.status },
+              error: null,
+            }),
+          }),
+        }),
         insert: async (row: Record<string, unknown>) => {
           state.inserts.push(row);
           return { error: state.insertError };
         },
         update: (row: Record<string, unknown>) => {
           state.updates.push(row);
-          return { eq: async () => ({ error: null }) };
+          return {
+            eq: async () => {
+              if (state.updateThrows)
+                throw new Error('sensitive database error');
+              return { error: null };
+            },
+          };
         },
         delete: () => ({
           eq: async (_column: string, value: string) => {
@@ -51,17 +67,17 @@ const settlementBody = {
 };
 
 function requestFor(
-  body: object,
+  body: unknown,
   options: { signature?: string | null; eventId?: string } = {}
 ) {
-  const rawBody = JSON.stringify(body);
+  const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
   const signature =
     options.signature === undefined
       ? createHmac('sha256', secret).update(rawBody).digest('hex')
       : options.signature;
   const headers = new Headers();
   if (signature) headers.set('x-razorpay-signature', signature);
-  if (options.eventId) headers.set('x-razorpay-event-id', options.eventId);
+  headers.set('x-razorpay-event-id', options.eventId ?? 'evt_default');
   return new Request('https://crm.example.com/api/razorpay/webhook', {
     method: 'POST',
     headers,
@@ -70,18 +86,26 @@ function requestFor(
 }
 
 describe('POST /api/razorpay/webhook', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
     state.insertError = null;
+    state.status = 'processed';
+    state.updateThrows = false;
     state.inserts.length = 0;
     state.updates.length = 0;
     state.deletes.length = 0;
-    process.env.RAZORPAY_WEBHOOK_SECRET = secret;
-    process.env.WHATSAPP_DESK_API_KEY = 'desk-api-key';
-    process.env.RAZORPAY_SETTLEMENT_RECIPIENT_PHONE = '+919876543210';
-    process.env.RAZORPAY_SETTLEMENT_RECIPIENT_NAME = 'Finance Team';
-    process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test.supabase.co';
-    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+    vi.stubEnv('RAZORPAY_WEBHOOK_SECRET', secret);
+    vi.stubEnv('WHATSAPP_DESK_API_KEY', 'desk-api-key');
+    vi.stubEnv('RAZORPAY_SETTLEMENT_RECIPIENT_PHONE', '+919876543210');
+    vi.stubEnv('RAZORPAY_SETTLEMENT_RECIPIENT_NAME', 'Finance Team');
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://test.supabase.co');
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', 'service-role-key');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://crm.example.com');
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{}', { status: 201 }))
@@ -144,7 +168,7 @@ describe('POST /api/razorpay/webhook', () => {
           'Finance Team',
           'setl_123',
           'INR 1,234.56',
-          '2024-04-01',
+          '01 Apr 2024',
           'UTR123456',
         ],
       },
@@ -165,5 +189,105 @@ describe('POST /api/razorpay/webhook', () => {
     expect(response.status).toBe(502);
     expect(state.deletes).toEqual(['evt_failed']);
     expect(state.updates).toHaveLength(0);
+  });
+
+  it.each(['{broken', 'null', '[]', '42'])(
+    'rejects malformed JSON/object: %s',
+    async (body) => {
+      expect((await POST(requestFor(body))).status).toBe(400);
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  );
+
+  it('verifies the original raw bytes including whitespace', async () => {
+    expect(
+      (await POST(requestFor(JSON.stringify(settlementBody, null, 2)))).status
+    ).toBe(200);
+  });
+
+  it('rejects a signature with trailing non-hex characters', async () => {
+    const signature = createHmac('sha256', secret)
+      .update(JSON.stringify(settlementBody))
+      .digest('hex');
+    expect(
+      (await POST(requestFor(settlementBody, { signature: signature + 'zz' })))
+        .status
+    ).toBe(401);
+  });
+
+  it('acknowledges completed duplicates without sending', async () => {
+    state.insertError = { code: '23505', message: 'duplicate' };
+    expect((await POST(requestFor(settlementBody))).status).toBe(200);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps concurrent duplicates retryable', async () => {
+    state.insertError = { code: '23505', message: 'duplicate' };
+    state.status = 'processing';
+    expect((await POST(requestFor(settlementBody))).status).toBe(503);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'RAZORPAY_WEBHOOK_SECRET',
+    'WHATSAPP_DESK_API_KEY',
+    'RAZORPAY_SETTLEMENT_RECIPIENT_PHONE',
+    'RAZORPAY_SETTLEMENT_RECIPIENT_NAME',
+    'NEXT_PUBLIC_SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'NEXT_PUBLIC_SITE_URL',
+  ])('fails closed without %s', async (name) => {
+    vi.stubEnv(name, '');
+    expect((await POST(requestFor(settlementBody))).status).toBe(500);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(state.inserts).toHaveLength(0);
+  });
+
+  it('requires E.164 with a country code and plus prefix', async () => {
+    vi.stubEnv('RAZORPAY_SETTLEMENT_RECIPIENT_PHONE', '9876543210');
+    expect((await POST(requestFor(settlementBody))).status).toBe(500);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('prefers event time and formats the Kolkata date across UTC midnight', async () => {
+    await POST(
+      requestFor({
+        ...settlementBody,
+        created_at: Date.parse('2026-09-17T20:00:00Z') / 1000,
+      })
+    );
+    const params = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)
+      .template.params;
+    expect(params[3]).toBe('18 Sept 2026');
+  });
+
+  it('requires an event ID for persistent deduplication', async () => {
+    const request = requestFor(settlementBody);
+    request.headers.delete('x-razorpay-event-id');
+    expect((await POST(request)).status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('fails closed if event persistence fails', async () => {
+    state.insertError = { code: '42P01', message: 'missing table' };
+    expect((await POST(requestFor(settlementBody))).status).toBe(502);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('releases failed network sends without logging credentials', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(fetch).mockRejectedValueOnce(
+      new Error('Bearer desk-api-key test-webhook-secret')
+    );
+    expect((await POST(requestFor(settlementBody))).status).toBe(502);
+    expect(state.deletes).toEqual(['evt_default']);
+    expect(JSON.stringify(log.mock.calls)).not.toContain('desk-api-key');
+    expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+  });
+
+  it('does not release a successfully sent event when completion persistence throws', async () => {
+    state.updateThrows = true;
+    expect((await POST(requestFor(settlementBody))).status).toBe(502);
+    expect(state.deletes).toHaveLength(0);
   });
 });

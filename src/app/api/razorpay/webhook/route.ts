@@ -10,6 +10,7 @@ type RazorpaySettlement = {
 
 type RazorpayWebhook = {
   event?: string;
+  created_at?: number;
   payload?: {
     settlement?: {
       entity?: RazorpaySettlement;
@@ -17,21 +18,15 @@ type RazorpayWebhook = {
   };
 };
 
-// The project does not currently expose generated Supabase database types.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let adminClient: any = null;
-
 function supabaseAdmin() {
-  if (!adminClient) {
-    adminClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
-  }
-  return adminClient;
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
 }
 
-function verifySignature(rawBody: string, signature: string, secret: string) {
+function verifySignature(rawBody: Buffer, signature: string, secret: string) {
+  if (!/^[a-fA-F0-9]{64}$/.test(signature)) return false;
   const expected = createHmac('sha256', secret).update(rawBody).digest();
 
   let received: Buffer;
@@ -54,7 +49,21 @@ function formatAmount(amount: number) {
 }
 
 function formatDate(createdAt: number) {
-  return new Date(createdAt * 1000).toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
+  }).format(new Date(createdAt * 1000));
+}
+
+function validTimestamp(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    Number.isFinite(new Date(value * 1000).getTime())
+  );
 }
 
 async function claimEvent(eventId: string, eventType: string) {
@@ -65,9 +74,17 @@ async function claimEvent(eventId: string, eventType: string) {
       event_type: eventType,
     });
 
-  if (!error) return true;
-  if (error.code === '23505') return false;
-  throw new Error(`Unable to claim Razorpay event: ${error.message}`);
+  if (!error) return 'claimed';
+  if (error.code === '23505') {
+    const { data, error: lookupError } = await supabaseAdmin()
+      .from('razorpay_webhook_events')
+      .select('status')
+      .eq('event_id', eventId)
+      .maybeSingle();
+    if (lookupError) throw new Error('Event lookup failed');
+    return data?.status === 'processed' ? 'duplicate' : 'processing';
+  }
+  throw new Error('Unable to claim Razorpay event');
 }
 
 async function releaseEvent(eventId: string) {
@@ -77,10 +94,7 @@ async function releaseEvent(eventId: string) {
     .eq('event_id', eventId);
 
   if (error) {
-    console.error('[razorpay-webhook] failed to release event claim', {
-      eventId,
-      error: error.message,
-    });
+    console.error('[razorpay-webhook] failed to release event claim', {});
   }
 }
 
@@ -91,15 +105,12 @@ async function completeEvent(eventId: string) {
     .eq('event_id', eventId);
 
   if (error) {
-    console.error('[razorpay-webhook] failed to mark event processed', {
-      eventId,
-      error: error.message,
-    });
+    console.error('[razorpay-webhook] failed to mark event processed', {});
   }
 }
 
 export async function POST(request: Request) {
-  const rawBody = await request.text();
+  const rawBody = Buffer.from(await request.arrayBuffer());
   const signature = request.headers.get('x-razorpay-signature');
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
@@ -118,7 +129,9 @@ export async function POST(request: Request) {
 
   let body: RazorpayWebhook;
   try {
-    body = JSON.parse(rawBody) as RazorpayWebhook;
+    body = JSON.parse(rawBody.toString('utf8')) as RazorpayWebhook;
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      throw new Error('Invalid body');
   } catch {
     return Response.json({ error: 'Invalid JSON' }, { status: 400 });
   }
@@ -128,12 +141,18 @@ export async function POST(request: Request) {
   }
 
   const settlement = body.payload?.settlement?.entity;
+  const timestamp = validTimestamp(body.created_at)
+    ? body.created_at
+    : settlement?.created_at;
   if (
-    !settlement?.id ||
+    typeof settlement?.id !== 'string' ||
+    !settlement.id.trim() ||
     typeof settlement.amount !== 'number' ||
-    !Number.isFinite(settlement.amount) ||
-    typeof settlement.created_at !== 'number' ||
-    !settlement.utr
+    !Number.isSafeInteger(settlement.amount) ||
+    settlement.amount < 0 ||
+    !validTimestamp(timestamp) ||
+    typeof settlement.utr !== 'string' ||
+    !settlement.utr.trim()
   ) {
     console.warn('[razorpay-webhook] settlement payload is incomplete');
     return Response.json(
@@ -143,30 +162,54 @@ export async function POST(request: Request) {
   }
 
   const eventId = request.headers.get('x-razorpay-event-id');
+  if (!eventId?.trim() || eventId.length > 255) {
+    return Response.json(
+      { error: 'Missing or invalid event ID' },
+      { status: 400 }
+    );
+  }
   let claimed = false;
+  let sent = false;
 
   try {
-    if (eventId) {
-      claimed = await claimEvent(eventId, body.event);
-      if (!claimed) {
-        return Response.json({ status: 'duplicate' }, { status: 200 });
-      }
-    } else {
-      console.warn(
-        '[razorpay-webhook] event ID missing; deduplication unavailable'
+    const apiKey = process.env.WHATSAPP_DESK_API_KEY;
+    const recipientPhone =
+      process.env.RAZORPAY_SETTLEMENT_RECIPIENT_PHONE?.trim();
+    const recipientName =
+      process.env.RAZORPAY_SETTLEMENT_RECIPIENT_NAME?.trim();
+
+    if (
+      !apiKey?.trim() ||
+      !recipientPhone ||
+      !/^\+[1-9]\d{6,14}$/.test(recipientPhone) ||
+      !recipientName ||
+      !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      !process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      !process.env.NEXT_PUBLIC_SITE_URL
+    ) {
+      console.error('[razorpay-webhook] missing or invalid configuration');
+      return Response.json(
+        { error: 'Webhook is not configured' },
+        { status: 500 }
       );
     }
+    // Use the configured site origin, never an untrusted incoming Host header.
+    const origin = new URL(process.env.NEXT_PUBLIC_SITE_URL);
+    if (origin.protocol !== 'https:' || origin.username || origin.password)
+      throw new Error('Invalid site origin');
+    const claim = await claimEvent(eventId, body.event);
+    if (claim === 'duplicate') return Response.json({ status: 'duplicate' });
+    if (claim === 'processing')
+      return Response.json(
+        { error: 'Event processing pending' },
+        { status: 503 }
+      );
+    claimed = true;
 
-    const apiKey = process.env.WHATSAPP_DESK_API_KEY;
-    const recipientPhone = process.env.RAZORPAY_SETTLEMENT_RECIPIENT_PHONE;
-    const recipientName = process.env.RAZORPAY_SETTLEMENT_RECIPIENT_NAME;
-
-    if (!apiKey || !recipientPhone || !recipientName) {
-      throw new Error('WhatsApp settlement notification is not configured');
-    }
-
-    const response = await fetch(new URL('/api/v1/messages', request.url), {
+    const response = await fetch(new URL('/api/v1/messages', origin), {
       method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(20000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
@@ -182,7 +225,7 @@ export async function POST(request: Request) {
             recipientName,
             settlement.id,
             formatAmount(settlement.amount),
-            formatDate(settlement.created_at),
+            formatDate(timestamp),
             settlement.utr,
           ],
         },
@@ -191,26 +234,25 @@ export async function POST(request: Request) {
 
     if (!response.ok) {
       console.error('[razorpay-webhook] WhatsApp API request failed', {
-        eventId: eventId ?? 'missing',
-        settlementId: settlement.id,
         status: response.status,
       });
       throw new Error('WhatsApp API request failed');
     }
 
-    if (eventId) await completeEvent(eventId);
+    sent = true;
+    await completeEvent(eventId);
 
-    console.info('[razorpay-webhook] settlement notification sent', {
-      eventId: eventId ?? 'missing',
-      settlementId: settlement.id,
-    });
+    console.info('[razorpay-webhook] settlement notification sent', {});
     return Response.json({ status: 'processed' }, { status: 200 });
-  } catch (error) {
-    if (eventId && claimed) await releaseEvent(eventId);
-    console.error('[razorpay-webhook] processing failed', {
-      eventId: eventId ?? 'missing',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
+  } catch {
+    if (claimed && !sent) {
+      try {
+        await releaseEvent(eventId);
+      } catch {
+        console.error('[razorpay-webhook] failed to release event claim');
+      }
+    }
+    console.error('[razorpay-webhook] processing failed');
     return Response.json(
       { error: 'Webhook processing failed' },
       { status: 502 }
