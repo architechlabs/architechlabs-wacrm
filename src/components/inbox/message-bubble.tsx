@@ -196,6 +196,9 @@ function MessageContent({
       // before the fix).
       return (
         <div>
+          {message.media_url?.match(/^\/api\/document-deliveries\/[0-9a-f-]{36}\/pdf$/i) && (
+            <a className="mb-2 block rounded border border-current/20 p-2 text-sm underline" href={message.media_url} target="_blank" rel="noopener noreferrer">Download attached PDF</a>
+          )}
           <span
             className={cn(
               "mb-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
