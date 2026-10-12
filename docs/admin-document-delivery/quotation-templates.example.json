@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "quotation",
+    "name": "quotation_pdf",
+    "language": "en_US",
+    "metaTemplateId": "REPLACE_WITH_VERIFIED_META_TEMPLATE_ID",
+    "bodyText": "Dear {{1}},\n\nPlease find attached the quotation prepared by Architech Labs for your requirements.\n\nQuotation Number: {{2}}\nQuotation Date: {{3}}\nProduct / Project: {{4}}\nQuotation Amount: {{5}}\nValid Until: {{6}}\n\nThe attached PDF contains the quotation details, pricing, and terms and conditions.\n\nPlease review it and contact our team if you have any questions or require clarification.\n\nThank you for considering Architech Labs.\n\nArchitech Labs",
+    "fields": [
+      "customerName",
+      "documentNumber",
+      "documentDate",
+      "project",
+      "amount",
+      "validUntil"
+    ]
+  }
+]

@@ -10,6 +10,10 @@
     },
   ],
   "preview_urls": false,
+  "keep_vars": true,
+  "vars": {
+    "ENABLE_ADMIN_DOCUMENT_DELIVERY": "false",
+  },
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
