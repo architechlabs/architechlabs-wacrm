@@ -69,3 +69,28 @@ The supplied tax template claims payment was received; this integration does not
 prove payment and will reject that wording. Use a separately approved neutral
 tax-invoice template. Proforma requires its own approved Utility/Document template
 that explicitly says it is not a tax invoice. Neither is configured by this example.
+
+## Disabled production release - 2026-10-12
+
+- Target: `https://whatsapp.architechlabs.in` (Worker `architech-wacrm`).
+- Built source: `c2db4309df82c0b67bf0245fc00e302617e61f2b`.
+- Active Worker version: `328c76b7-3c52-4e92-8424-b5648dbe4326`, 100% traffic.
+- Rollback version: `6a62f093-a192-4142-aa8c-fc08df10c1ba`.
+- Explicit runtime switch: `ENABLE_ADMIN_DOCUMENT_DELIVERY=false`.
+- Existing secret binding names/types and plain-text variable values were preserved;
+  their values were compared in memory and never printed or committed.
+- Lint: zero errors (34 existing warnings); typecheck passed; 999 tests passed in
+  102 files. Next/OpenNext production build and Wrangler dry run passed. Local
+  Worker smoke checks passed; artifact scan found no embedded server secrets.
+- GitHub Actions did not run for this fork PR; these are local release checks,
+  not a claim of successful GitHub CI or production migration verification.
+- Live smoke: login 200; root/inbox redirect behavior unchanged; Razorpay GET
+  remains 405; document capabilities GET 200 with disabled/empty policies and
+  no-store; document POST 404 with `document_delivery_disabled`.
+- The live settings bundle matches the built artifact and includes `documents:send`.
+- No production Supabase migration, database permission change, AWS update,
+  dedicated API-key creation, real document upload or message send was performed.
+
+Next: create the dedicated Desk key with only `documents:send`, store it securely
+in AWS, then complete the remaining connection/migration/template/release gates
+above. This deployment alone does not enable admin-dashboard WhatsApp sending.
