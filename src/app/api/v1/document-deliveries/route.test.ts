@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { ApiError } from '@/lib/api/v1/respond';
-const mocks = vi.hoisted(() => ({auth:vi.fn(),deliver:vi.fn(),db:vi.fn(),decrypt:vi.fn(() => 'synthetic')}));
+const mocks = vi.hoisted(() => ({auth:vi.fn(),enqueue:vi.fn(),runtime:vi.fn(),db:vi.fn(),deliver:vi.fn(),decrypt:vi.fn(() => 'synthetic')}));
 vi.mock('@/lib/auth/api-context',() => ({requireApiKey:mocks.auth}));
 vi.mock('@/lib/document-delivery/service',() => ({deliverDocument:mocks.deliver}));
+vi.mock('@/lib/document-delivery/queue',() => ({enqueueDocument:mocks.enqueue}));
+vi.mock('@/lib/document-delivery/queue-runtime',() => ({documentQueueRuntime:mocks.runtime}));
 vi.mock('@/lib/whatsapp/encryption',() => ({decrypt:mocks.decrypt}));
 import { GET, POST } from './route';
 
@@ -12,7 +14,8 @@ const policy = {kind:'quotation',name:'quotation_pdf',language:'en_US',metaTempl
 const request = (body:unknown) => new Request('https://desk.example/api/v1/document-deliveries',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
 describe('document bridge authorization and default-off routes',() => {
   beforeEach(() => {
-    vi.clearAllMocks();vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','false');vi.stubEnv('ADMIN_DOCUMENT_DELIVERY_ACCOUNT_ID',accountId);vi.stubEnv('ADMIN_DOCUMENT_DELIVERY_TEMPLATES',JSON.stringify([policy]));
+    vi.resetAllMocks();vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','false');vi.stubEnv('ENABLE_ADMIN_DOCUMENT_QUEUE','true');vi.stubEnv('ADMIN_DOCUMENT_DELIVERY_ACCOUNT_ID',accountId);vi.stubEnv('ADMIN_DOCUMENT_DELIVERY_TEMPLATES',JSON.stringify([policy]));
+    mocks.runtime.mockResolvedValue({payloads:{},queue:{}});
     const query = {select:vi.fn().mockReturnThis(),eq:vi.fn().mockReturnThis(),single:vi.fn(async () => ({data:{phone_number_id:'789',access_token:'encrypted',waba_id:'987'},error:null}))};
     mocks.db.mockReturnValue(query);mocks.auth.mockResolvedValue({accountId,keyId:'key',supabase:{from:mocks.db}});
   });
@@ -35,10 +38,31 @@ describe('document bridge authorization and default-off routes',() => {
   it('only dispatches a static consented PDF with the pinned account config',async () => {
     vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','true');
     const pdf = await PDFDocument.create();pdf.addPage();
-    mocks.deliver.mockResolvedValue({status:'accepted',alreadySent:false,deliveryId:'delivery',messageId:'message'});
+    mocks.enqueue.mockResolvedValue({status:'queued',alreadySent:false,deliveryId:'delivery',messageId:'message'});
     const response = await POST(request({kind:'quotation',revision:1,documentNumber:'Q1',to:'+919876543210',consentConfirmed:true,fields:{customerName:'Example',documentNumber:'Q1'},pdfBase64:Buffer.from(await pdf.save()).toString('base64')}));
-    expect(response.status).toBe(202);expect(response.headers.get('cache-control')).toBe('no-store');expect(mocks.deliver).toHaveBeenCalledTimes(1);
-    expect(mocks.db.mock.results[0].value.eq).toHaveBeenCalledWith('account_id',accountId);
+    expect(response.status).toBe(202);expect(response.headers.get('cache-control')).toBe('no-store');expect(mocks.enqueue).toHaveBeenCalledTimes(1);
+    expect(await response.json()).toMatchObject({data:{status:'queued'}});
+    expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({accountId,payloads:{},queue:{}}));
+    expect(mocks.db).not.toHaveBeenCalled();expect(mocks.decrypt).not.toHaveBeenCalled();expect(mocks.deliver).not.toHaveBeenCalled();
+  });
+  it('never uses the synchronous path when the queue is off',async () => {
+    vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','true');vi.stubEnv('ENABLE_ADMIN_DOCUMENT_QUEUE','false');
+    expect(await (await GET(new Request('https://desk.example/api'))).json()).toEqual({data:{enabled:false,policies:[]}});
+    expect((await POST(request({}))).status).toBe(404);
+    expect(mocks.auth).not.toHaveBeenCalled();expect(mocks.runtime).not.toHaveBeenCalled();expect(mocks.deliver).not.toHaveBeenCalled();
+  });
+  it('advertises queued mode only with valid bindings and fails before any reservation if missing',async () => {
+    vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','true');
+    expect(await (await GET(new Request('https://desk.example/api'))).json()).toMatchObject({data:{enabled:true,mode:'queued'}});
+    mocks.runtime.mockRejectedValue(new Error('PRIVATE CONFIG'));
+    expect((await POST(request({}))).status).toBe(503);expect(mocks.enqueue).not.toHaveBeenCalled();expect(mocks.db).not.toHaveBeenCalled();
+  });
+  it('returns existing acceptance without re-enqueueing an accepted duplicate',async () => {
+    vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','true');
+    const pdf = await PDFDocument.create();pdf.addPage();
+    mocks.enqueue.mockResolvedValue({status:'accepted',alreadySent:true,deliveryId:'delivery',messageId:'message'});
+    const response = await POST(request({kind:'quotation',revision:1,documentNumber:'Q1',to:'+919876543210',consentConfirmed:true,fields:{customerName:'Example',documentNumber:'Q1'},pdfBase64:Buffer.from(await pdf.save()).toString('base64')}));
+    expect(response.status).toBe(200);expect(await response.json()).toMatchObject({data:{status:'accepted',alreadySent:true}});expect(mocks.deliver).not.toHaveBeenCalled();
   });
   it('never exposes an unexpected provider or database error',async () => {
     vi.stubEnv('ENABLE_ADMIN_DOCUMENT_DELIVERY','true');mocks.auth.mockRejectedValue(new Error('PRIVATE TOKEN'));

@@ -140,6 +140,21 @@ describe('private Meta transport',() => {
     await expect(client.upload(prepareDocument(input,policy))).rejects.toMatchObject({code:'meta_response_unconfirmed'});
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it('matches the Inbox media ID limit and refuses invalid IDs before sending or downloading',async () => {
+    const doc=prepareDocument(input,policy);
+    const maximum='4'.repeat(40);
+    const accepted=new DocumentMetaClient('789','synthetic','987',vi.fn(async () => Response.json({id:maximum})));
+    expect(await accepted.upload(doc)).toBe(maximum);
+    for (const mediaId of ['4'.repeat(41),'','not-a-media-id']) {
+      const upload=new DocumentMetaClient('789','synthetic','987',vi.fn(async () => Response.json({id:mediaId})));
+      await expect(upload.upload(doc)).rejects.toMatchObject({code:'media_upload_unconfirmed'});
+      const fetcher=vi.fn();
+      const client=new DocumentMetaClient('789','synthetic','987',fetcher);
+      await expect(client.send(policy,doc,mediaId)).rejects.toMatchObject({code:'media_upload_unconfirmed'});
+      await expect(client.download(mediaId,'hash')).rejects.toMatchObject({code:'media_unavailable'});
+      expect(fetcher).not.toHaveBeenCalled();
+    }
+  });
   it('rejects oversized responses and refuses to forward credentials to another media host',async () => {
     const client = new DocumentMetaClient('789','synthetic','987',vi.fn(async () => new Response('x'.repeat(70_000))));
     await expect(client.verifyTemplate(policy)).rejects.toThrow();

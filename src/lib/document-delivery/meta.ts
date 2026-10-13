@@ -56,10 +56,13 @@ export class DocumentMetaClient {
     form.append('type','application/pdf');
     form.append('file',new Blob([new Uint8Array(document.pdf)], { type:'application/pdf' }),document.filename);
     const data = await this.request(`${this.phoneNumberId}/media`, { method:'POST',body:form },10_000);
-    if (typeof data.id !== 'string' || !/^\d{1,80}$/.test(data.id)) throw new DocumentDeliveryError('media_upload_unconfirmed',502);
+    // Match the reviewed Inbox schema so an uploaded ID cannot fail persistence
+    // merely because the transport accepted a longer representation.
+    if (typeof data.id !== 'string' || !/^\d{1,40}$/.test(data.id)) throw new DocumentDeliveryError('media_upload_unconfirmed',502);
     return data.id;
   }
   async send(policy: DocumentPolicy, document: PreparedDocument, mediaId: string): Promise<string> {
+    if (!/^\d{1,40}$/.test(mediaId)) throw new DocumentDeliveryError('media_upload_unconfirmed',502);
     const data = await this.request(`${this.phoneNumberId}/messages`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
       messaging_product:'whatsapp',recipient_type:'individual',to:document.to.slice(1),type:'template',
       template:{ name:policy.name,language:{code:policy.language},components:[
@@ -72,7 +75,7 @@ export class DocumentMetaClient {
     return messages[0].id;
   }
   async download(mediaId: string, expectedHash: string): Promise<Uint8Array> {
-    if (!/^\d{1,80}$/.test(mediaId)) throw new DocumentDeliveryError('media_unavailable',404);
+    if (!/^\d{1,40}$/.test(mediaId)) throw new DocumentDeliveryError('media_unavailable',404);
     const metadata = await this.request(`${mediaId}?phone_number_id=${this.phoneNumberId}`,{method:'GET'},5_000);
     if (typeof metadata.url !== 'string' || metadata.mime_type !== 'application/pdf') throw new DocumentDeliveryError('media_unavailable',404);
     const url = new URL(metadata.url);

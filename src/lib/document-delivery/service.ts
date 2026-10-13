@@ -2,7 +2,7 @@ import { DocumentDeliveryError, type DocumentPolicy, type PreparedDocument } fro
 
 export interface DeliveryRecord { id: string; fingerprint: string; state: 'reserved' | 'accepted' | 'unknown'; messageId: string | null }
 export interface DocumentDeliveryStore {
-  reserve(document: PreparedDocument): Promise<DeliveryRecord | null>;
+  reserve(document: PreparedDocument, policy: DocumentPolicy): Promise<DeliveryRecord | null>;
   find(key: string): Promise<DeliveryRecord | null>;
   prepareMessage(record: DeliveryRecord, document: PreparedDocument, policy: DocumentPolicy): Promise<string>;
   recordMedia(id: string, mediaId: string): Promise<void>;
@@ -16,7 +16,7 @@ export interface DocumentTransport {
 }
 export async function deliverDocument(store: DocumentDeliveryStore, transport: DocumentTransport, policy: DocumentPolicy, document: PreparedDocument) {
   // Reserve before any upload/send. Uncertain sends are NEVER retried automatically.
-  const record = await store.reserve(document);
+  const record = await store.reserve(document, policy);
   if (!record) {
     const existing = await store.find(document.key);
     if (!existing || existing.fingerprint !== document.fingerprint) throw new DocumentDeliveryError('document_delivery_conflict');

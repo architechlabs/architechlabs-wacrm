@@ -13,6 +13,11 @@
   "keep_vars": true,
   "vars": {
     "ENABLE_ADMIN_DOCUMENT_DELIVERY": "false",
+    "ENABLE_ADMIN_DOCUMENT_QUEUE": "false",
+    "ADMIN_DOCUMENT_PAYLOAD_STORAGE": "supabase",
+  },
+  "queues": {
+    "producers": [{ "binding": "ADMIN_DOCUMENT_QUEUE", "queue": "architech-admin-documents" }],
   },
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
