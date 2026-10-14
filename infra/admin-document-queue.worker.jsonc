@@ -8,7 +8,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "keep_vars": true,
-  "vars": { "ENABLE_ADMIN_DOCUMENT_QUEUE_CONSUMER": "false" },
+  "vars": { "ENABLE_ADMIN_DOCUMENT_QUEUE_CONSUMER": "true" },
   "queues": {
     "consumers": [{
       "queue": "architech-admin-documents",

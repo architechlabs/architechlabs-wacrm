@@ -12,8 +12,8 @@
   "preview_urls": false,
   "keep_vars": true,
   "vars": {
-    "ENABLE_ADMIN_DOCUMENT_DELIVERY": "false",
-    "ENABLE_ADMIN_DOCUMENT_QUEUE": "false",
+    "ENABLE_ADMIN_DOCUMENT_DELIVERY": "true",
+    "ENABLE_ADMIN_DOCUMENT_QUEUE": "true",
     "ADMIN_DOCUMENT_PAYLOAD_STORAGE": "supabase",
     "ADMIN_DOCUMENT_DELIVERY_ACCOUNT_ID": "90e47f37-19d5-4fb8-94f8-8c2df7599f7e",
   },
