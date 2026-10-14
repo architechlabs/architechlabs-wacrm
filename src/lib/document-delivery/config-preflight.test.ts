@@ -50,9 +50,10 @@ describe('offline document configuration preflight', { timeout: 30_000 }, () => 
       expect(data.activationReady).toBe(false);
     }
   });
-  it('rejects payment-received tax wording and a quotation reused for proforma', () => {
+  it('allows tax wording for attested sends and rejects quotation reuse for proforma', () => {
+    expect(check({ADMIN_DOCUMENT_DELIVERY_TEMPLATES:JSON.stringify([{...policy,kind:'tax',bodyText:'Dear {{1}}, payment received; tax invoice {{2}}.'}])}).status).toBe(0);
     for (const p of [
-      { ...policy, kind: 'tax', bodyText: 'Dear {{1}}, payment received for tax invoice {{2}}.' },
+      { ...policy, kind: 'tax', bodyText: 'Dear {{1}}, proforma invoice {{2}}.' },
       { ...policy, kind: 'proforma' },
     ]) expect(check({ ADMIN_DOCUMENT_DELIVERY_TEMPLATES: JSON.stringify([p]) }).status).toBe(1);
   });

@@ -49,10 +49,36 @@ describe('document configuration',() => {
     expect(documentConfiguration(config(policy))?.policies).toEqual([policy]);
     for (const p of [{...policy,fields:['customerName']},{...policy,bodyText:'Dear {{1}} quotation {{3}}'},{...policy,bodyText:'Dear {{customer}} quotation {{2}}'},{...policy,fields:['customerName','customerName']}]) expect(() => documentConfiguration(config(p as DocumentPolicy))).toThrow();
   });
-  it('blocks the currently supplied payment-received tax template and misleading proforma reuse',() => {
-    expect(() => documentConfiguration(config({...policy,kind:'tax',bodyText:'Dear {{1}}, payment has been received; tax invoice {{2}}'}))).toThrow();
+  it('pins the three live PDF templates and maps each document kind independently',() => {
+    const policies=JSON.parse(readFileSync(new URL('../../../docs/admin-document-delivery/document-templates.production.json',import.meta.url),'utf8')) as DocumentPolicy[];
+    expect(documentConfiguration({...config(policy),ADMIN_DOCUMENT_DELIVERY_TEMPLATES:JSON.stringify(policies)})?.policies).toEqual(policies);
+    expect(policies.map(p=>[p.kind,p.name,p.metaTemplateId])).toEqual([
+      ['quotation','quotation_pdf','1277253704541513'],['proforma','proforma_invoice_pdf','1096868216503353'],['tax','tax_invoice_pdf','1416323569963592']]);
+    const fields={customerName:'Synthetic Customer',documentNumber:'TEST-1',documentDate:'14 October 2026',project:'Synthetic project',orderReference:'TEST-REF',amount:'INR 1.00',validUntil:'28 October 2026'};
+    for(const p of policies){
+      const doc=prepareDocument({...input,kind:p.kind,revision:p.kind === 'quotation' ? 1 : undefined,
+        documentNumber:'TEST-1',fields:Object.fromEntries(p.fields.map(f=>[f,fields[f]])),...(p.kind === 'tax' ? {paymentReceivedConfirmed:true} : {})},p);
+      expect(doc.parameters).toEqual(p.fields.map(f=>fields[f]));expect(doc.renderedBody).not.toContain('{{');
+      if(p.kind === 'proforma') expect(doc.renderedBody).toContain('Valid Until: 28 October 2026');
+    }
+  });
+  it('allows the approved invoice wording without substituting another document kind',() => {
+    expect(documentConfiguration(config({...policy,kind:'tax',bodyText:'Dear {{1}}, payment has been received; tax invoice {{2}}'}))).not.toBeNull();
     expect(() => documentConfiguration(config({...policy,kind:'proforma'}))).toThrow();
+    expect(documentConfiguration(config({...policy,kind:'proforma',bodyText:'Dear {{1}}, your Proforma Invoice {{2}} is ready.'}))).not.toBeNull();
     expect(documentConfiguration(config({...policy,kind:'tax',bodyText:'Dear {{1}}, tax invoice {{2}} is attached for your records.'}))).not.toBeNull();
+  });
+  it('requires an explicit operator attestation before a tax payment claim can be queued',() => {
+    const paidPolicy:DocumentPolicy={...policy,kind:'tax',bodyText:'Dear {{1}}, payment received; tax invoice {{2}}.'};
+    const taxInput={...input,kind:'tax',revision:undefined};
+    for (const paymentReceivedConfirmed of [undefined,false,'true',1]) {
+      expect(() => prepareDocument({...taxInput,paymentReceivedConfirmed},paidPolicy)).toThrow('invalid_document_request');
+    }
+    const prepared=prepareDocument({...taxInput,paymentReceivedConfirmed:true},paidPolicy);
+    expect(prepared.paymentReceivedConfirmed).toBe(true);
+    expect(prepared.renderedBody).toContain('payment received');
+    // Neutral invoices remain usable without any payment assertion.
+    expect(prepareDocument(taxInput,{...paidPolicy,bodyText:'Dear {{1}}, tax invoice {{2}}.'}).paymentReceivedConfirmed).toBeUndefined();
   });
 });
 describe('document validation and duplicate boundary',() => {
@@ -107,6 +133,16 @@ describe('document validation and duplicate boundary',() => {
 });
 describe('private Meta transport',() => {
   const approved = {id:'123',name:'quotation_pdf',language:'en_US',status:'APPROVED',category:'UTILITY',components:[{type:'HEADER',format:'DOCUMENT'},{type:'BODY',text:policy.bodyText}]};
+  it('inspects only safe template configuration and selects the exact language',async () => {
+    const fetcher=vi.fn(async () => Response.json({data:[{...approved,language:'hi'},
+      {...approved,access_token:'PRIVATE',components:[{type:'HEADER',format:'DOCUMENT',example:{header_handle:['PRIVATE SAMPLE']}},{type:'BODY',text:policy.bodyText,example:{body_text:[['PRIVATE NAME']]}}]}]}));
+    const client=new DocumentMetaClient('789','synthetic','987',fetcher);
+    expect(await client.inspectTemplate('quotation_pdf','en_US')).toEqual({id:'123',name:'quotation_pdf',language:'en_US',status:'APPROVED',category:'UTILITY',headerFormat:'DOCUMENT',bodyText:policy.bodyText,hasButtons:false});
+    await expect(client.verifyTemplate(policy)).resolves.toBeUndefined();
+    const invalidFetcher=vi.fn();
+    await expect(new DocumentMetaClient('789','synthetic','987',invalidFetcher).inspectTemplate('../other','en_US')).rejects.toThrow();
+    expect(invalidFetcher).not.toHaveBeenCalled();
+  });
   it('checks approval/body/language and uploads bytes, never sample handles or public URLs',async () => {
     const calls:{url:string;init?:RequestInit}[] = [];
     const fetcher = vi.fn(async (url:RequestInfo|URL,init?:RequestInit) => {
@@ -126,19 +162,30 @@ describe('private Meta transport',() => {
     const payload = JSON.parse(calls[2].init?.body as string);
     expect(payload.to).toBe('919876543210');
     expect(payload.template.components[0].parameters[0].document).toEqual({id:'456',filename:doc.filename});
-    expect(calls.every(c => c.init?.redirect === 'error')).toBe(true);
+    expect(calls[0].init?.redirect).toBe('manual');
+    expect(calls.slice(1).every(c => c.init?.redirect === 'manual')).toBe(true);
   });
   it('rejects paused, changed, wrong-language, wrong-header and button-bearing templates',async () => {
     for (const change of [{status:'PAUSED'},{language:'en'},{category:'MARKETING'},{components:[{type:'HEADER',format:'IMAGE'},{type:'BODY',text:policy.bodyText}]},{components:[...approved.components,{type:'BUTTONS'}]},{components:[{type:'HEADER',format:'DOCUMENT'},{type:'BODY',text:'Changed'}]}]) {
       const client = new DocumentMetaClient('789','synthetic','987',vi.fn(async () => Response.json({data:[{...approved,...change}]})));
-      await expect(client.verifyTemplate(policy)).rejects.toMatchObject({code:'template_not_verified'});
+      await expect(client.verifyTemplate(policy)).rejects.toMatchObject({code:expect.stringMatching(/^template_.*_mismatch$/)});
     }
+  });
+  it('reports only the HTTP status for a failed private template lookup', async () => {
+    const client = new DocumentMetaClient('789','synthetic','987',vi.fn(async () => new Response('PRIVATE PROVIDER DETAILS',{status:400})));
+    await expect(client.verifyTemplate(policy)).rejects.toMatchObject({code:'template_lookup_http_400'});
   });
   it('never retries a rejected upload and sanitizes provider errors',async () => {
     const fetcher = vi.fn(async () => new Response('PRIVATE TOKEN/DETAILS',{status:500}));
     const client = new DocumentMetaClient('789','synthetic','987',fetcher);
     await expect(client.upload(prepareDocument(input,policy))).rejects.toMatchObject({code:'meta_response_unconfirmed'});
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('refuses redirect responses without following them or forwarding the Meta token',async () => {
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValue(new Response(null,{status:302,headers:{Location:'https://evil.example'}}));
+    const client=new DocumentMetaClient('789','synthetic','987',fetcher);
+    await expect(client.upload(prepareDocument(input,policy))).rejects.toMatchObject({code:'meta_response_unconfirmed'});
+    expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0][1]?.redirect).toBe('manual');
   });
   it('matches the Inbox media ID limit and refuses invalid IDs before sending or downloading',async () => {
     const doc=prepareDocument(input,policy);
@@ -163,9 +210,9 @@ describe('private Meta transport',() => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('refuses an ID-only result, absent WABA membership, or an ambiguous match',async () => {
-    for (const response of [approved,{data:[]},{data:[{...approved,id:'other'}]},{data:[approved,approved]}]) {
+    for (const [response, code] of [[approved,'template_lookup_invalid_response'],[{data:[]},'template_name_mismatch'],[{data:[{...approved,id:'other'}]},'template_id_mismatch'],[{data:[approved,approved]},'template_name_mismatch']] as const) {
       const fetcher = vi.fn(async () => Response.json(response));
-      await expect(new DocumentMetaClient('789','synthetic','987',fetcher).verifyTemplate(policy)).rejects.toMatchObject({code:'template_not_verified'});
+      await expect(new DocumentMetaClient('789','synthetic','987',fetcher).verifyTemplate(policy)).rejects.toMatchObject({code});
       expect(fetcher).toHaveBeenCalledTimes(1);
     }
   });

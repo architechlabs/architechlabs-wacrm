@@ -27,7 +27,7 @@ export async function processDocumentQueue(batch: QueueBatch, env: DocumentWorke
         // PDF URL, Supabase credential or Meta token in this Worker or queue.
         const response = await env.DESK.fetch(new Request(endpoint,{
           method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${env.ADMIN_DOCUMENT_WORKER_TOKEN}`},
-          body:JSON.stringify(job),signal:controller.signal,redirect:'error',
+          body:JSON.stringify(job),signal:controller.signal,redirect:'manual',
         }));
         // Terminal tiny response: do not parse/log an untrusted provider body.
         await response.body?.cancel();
@@ -47,7 +47,7 @@ const worker = {
     if (!env.DESK || !/^[0-9a-f]{64}$/iu.test(env.ADMIN_DOCUMENT_WORKER_TOKEN ?? '')) throw new Error('Document cleanup configuration unavailable');
     const response = await env.DESK.fetch(new Request('https://desk.internal/api/internal/admin-document-deliveries/cleanup', {
       method: 'POST', headers: { Authorization: `Bearer ${env.ADMIN_DOCUMENT_WORKER_TOKEN}` },
-      signal: AbortSignal.timeout(30_000), redirect: 'error',
+      signal: AbortSignal.timeout(30_000), redirect: 'manual',
     }));
     await response.body?.cancel();
     if (response.status !== 204) throw new Error('Document cleanup failed');

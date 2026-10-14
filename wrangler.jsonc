@@ -15,6 +15,7 @@
     "ENABLE_ADMIN_DOCUMENT_DELIVERY": "false",
     "ENABLE_ADMIN_DOCUMENT_QUEUE": "false",
     "ADMIN_DOCUMENT_PAYLOAD_STORAGE": "supabase",
+    "ADMIN_DOCUMENT_DELIVERY_ACCOUNT_ID": "90e47f37-19d5-4fb8-94f8-8c2df7599f7e",
   },
   "queues": {
     "producers": [{ "binding": "ADMIN_DOCUMENT_QUEUE", "queue": "architech-admin-documents" }],

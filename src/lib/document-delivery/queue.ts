@@ -18,7 +18,8 @@ export interface ClaimStore {
 }
 function input(document: PreparedDocument): DocumentInput {
   return {kind:document.kind,documentNumber:document.documentNumber,to:document.to,consentConfirmed:true,
-    fields:document.fields,pdfBase64:document.pdfBase64,...(document.revision === undefined ? {} : {revision:document.revision})};
+    fields:document.fields,pdfBase64:document.pdfBase64,...(document.revision === undefined ? {} : {revision:document.revision}),
+    ...(document.paymentReceivedConfirmed === true ? {paymentReceivedConfirmed:true as const} : {})};
 }
 /** Reserve one Inbox row, persist the encrypted payload, then publish metadata only. */
 export async function enqueueDocument(options: {

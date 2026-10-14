@@ -2,8 +2,16 @@ import { DocumentDeliveryError, MAX_DOCUMENT_BYTES, sha256, type DocumentPolicy,
 
 // A separate bounded, no-retry transport. Existing chat/order send behavior is untouched.
 const BASE = 'https://graph.facebook.com/v21.0';
-async function readJson(response: Response): Promise<Record<string, unknown>> {
-  if (!response.ok || !response.body) { await response.body?.cancel(); throw new DocumentDeliveryError('meta_response_unconfirmed', 502); }
+export interface DocumentTemplateSnapshot {
+  id: string; name: string; language: string; status: string; category: string;
+  headerFormat: string | null; bodyText: string | null; hasButtons: boolean;
+}
+async function readJson(response: Response, diagnoseTemplateLookup = false): Promise<Record<string, unknown>> {
+  if (!response.ok || !response.body) {
+    await response.body?.cancel();
+    if (diagnoseTemplateLookup && !response.ok) throw new DocumentDeliveryError(`template_lookup_http_${response.status}`, 502);
+    throw new DocumentDeliveryError('meta_response_unconfirmed', 502);
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -18,7 +26,7 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
     const data: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
     return data as Record<string, unknown>;
-  } catch { throw new DocumentDeliveryError('meta_response_unconfirmed', 502); }
+  } catch { throw new DocumentDeliveryError(diagnoseTemplateLookup ? 'template_lookup_invalid_response' : 'meta_response_unconfirmed', 502); }
   finally { await reader.cancel().catch(() => undefined); }
 }
 
@@ -26,29 +34,65 @@ export class DocumentMetaClient {
   constructor(private readonly phoneNumberId: string, private readonly token: string, private readonly wabaId: string, private readonly fetcher: typeof fetch = fetch) {
     if (!/^\d{1,40}$/.test(phoneNumberId) || !/^\d{1,40}$/.test(wabaId) || !token) throw new DocumentDeliveryError('whatsapp_not_configured', 503);
   }
-  private async request(path: string, init: RequestInit, timeout: number) {
+  private async request(path: string, init: RequestInit, timeout: number, diagnoseTemplateLookup = false) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
-      return await readJson(await this.fetcher(`${BASE}/${path}`, { ...init, headers: { ...init.headers, Authorization: `Bearer ${this.token}` }, redirect: 'error', signal: controller.signal }));
-    } catch { throw new DocumentDeliveryError('meta_response_unconfirmed', 502); }
+      let response: Response;
+      try {
+        // workerd does not implement redirect:"error". Manual mode never forwards
+        // credentials; readJson rejects 3xx before inspecting the response body.
+        response = await this.fetcher(`${BASE}/${path}`, { ...init, headers: { ...init.headers, Authorization: `Bearer ${this.token}` }, redirect: 'manual', signal: controller.signal });
+      } catch {
+        if (diagnoseTemplateLookup) throw new DocumentDeliveryError(controller.signal.aborted ? 'template_lookup_timeout' : 'template_lookup_transport', 502);
+        throw new DocumentDeliveryError('meta_response_unconfirmed', 502);
+      }
+      return await readJson(response, diagnoseTemplateLookup);
+    } catch (error) {
+      if (diagnoseTemplateLookup && error instanceof DocumentDeliveryError) throw error;
+      throw new DocumentDeliveryError('meta_response_unconfirmed', 502);
+    }
     finally { clearTimeout(timer); }
   }
-  async verifyTemplate(policy: DocumentPolicy) {
+  private async lookupTemplate(name: string, language: string): Promise<Record<string, unknown>> {
+    if (!/^[a-z0-9_]{1,100}$/.test(name) || !/^[a-z]{2}(?:_[A-Z]{2})?$/.test(language)) throw new DocumentDeliveryError('invalid_template_lookup',400);
     // A token may access multiple WABAs: an ID-only lookup cannot prove ownership.
     // Query the configured WABA and match the exact ID/language; never follow paging URLs.
-    const query = new URLSearchParams({name:policy.name,fields:'id,name,language,status,category,components',limit:'100'});
-    const response = await this.request(`${this.wabaId}/message_templates?${query}`, { method:'GET' }, 5_000);
-    const matches = Array.isArray(response.data) ? (response.data as Record<string, unknown>[]).filter(t => t && t.id === policy.metaTemplateId && t.language === policy.language) : [];
-    if (matches.length !== 1) throw new DocumentDeliveryError('template_not_verified',409);
-    const data = matches[0];
+    const query = new URLSearchParams({name,fields:'id,name,language,status,category,components',limit:'100'});
+    const response = await this.request(`${this.wabaId}/message_templates?${query}`, { method:'GET' }, 5_000, true);
+    if (!Array.isArray(response.data)) throw new DocumentDeliveryError('template_lookup_invalid_response', 502);
+    const named = (response.data as Record<string, unknown>[]).filter(t => t && t.name === name);
+    if (!named.length) throw new DocumentDeliveryError('template_name_mismatch', 409);
+    const localized = named.filter(t => t.language === language);
+    if (!localized.length) throw new DocumentDeliveryError('template_language_mismatch', 409);
+    if (localized.length !== 1) throw new DocumentDeliveryError('template_name_mismatch', 409);
+    return localized[0];
+  }
+  async inspectTemplate(name: string, language: string): Promise<DocumentTemplateSnapshot> {
+    const data = await this.lookupTemplate(name,language);
+    if (typeof data.id !== 'string' || !/^\d{1,40}$/.test(data.id) || typeof data.status !== 'string' || typeof data.category !== 'string') throw new DocumentDeliveryError('template_lookup_invalid_response',502);
+    const components = Array.isArray(data.components) ? data.components as Record<string,unknown>[] : [];
+    const headers = components.filter(c => c?.type === 'HEADER');
+    const bodies = components.filter(c => c?.type === 'BODY');
+    // Never return sample names, media URLs/handles, access tokens or arbitrary
+    // Meta response fields. This is an operator-only, read-only configuration view.
+    return {id:data.id,name,language,status:data.status,category:data.category,
+      headerFormat:headers.length === 1 && typeof headers[0].format === 'string' ? headers[0].format : null,
+      bodyText:bodies.length === 1 && typeof bodies[0].text === 'string' ? bodies[0].text : null,
+      hasButtons:components.some(c => c?.type === 'BUTTONS')};
+  }
+  async verifyTemplate(policy: DocumentPolicy) {
+    const data = await this.lookupTemplate(policy.name,policy.language);
+    if (data.id !== policy.metaTemplateId) throw new DocumentDeliveryError('template_id_mismatch', 409);
+    if (data.language !== policy.language) throw new DocumentDeliveryError('template_language_mismatch', 409);
+    if (data.status !== 'APPROVED') throw new DocumentDeliveryError('template_status_mismatch', 409);
+    if (data.category !== 'UTILITY') throw new DocumentDeliveryError('template_category_mismatch', 409);
     const components = Array.isArray(data.components) ? data.components as Record<string, unknown>[] : [];
     const header = components.filter(c => c.type === 'HEADER');
     const body = components.filter(c => c.type === 'BODY');
-    if (data.id !== policy.metaTemplateId || data.name !== policy.name || data.language !== policy.language || data.status !== 'APPROVED' || data.category !== 'UTILITY' ||
-        header.length !== 1 || header[0].format !== 'DOCUMENT' || body.length !== 1 || body[0].text !== policy.bodyText || components.some(c => c.type === 'BUTTONS')) {
-      throw new DocumentDeliveryError('template_not_verified', 409);
-    }
+    if (header.length !== 1 || header[0].format !== 'DOCUMENT') throw new DocumentDeliveryError('template_header_mismatch', 409);
+    if (body.length !== 1 || body[0].text !== policy.bodyText) throw new DocumentDeliveryError('template_body_mismatch', 409);
+    if (components.some(c => c.type === 'BUTTONS')) throw new DocumentDeliveryError('template_buttons_mismatch', 409);
   }
   async upload(document: PreparedDocument): Promise<string> {
     const form = new FormData();
@@ -84,7 +128,7 @@ export class DocumentMetaClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(),10_000);
     try {
-      const response = await this.fetcher(url,{headers:{Authorization:`Bearer ${this.token}`},redirect:'error',signal:controller.signal});
+      const response = await this.fetcher(url,{headers:{Authorization:`Bearer ${this.token}`},redirect:'manual',signal:controller.signal});
       if (!response.ok || !response.body) throw new Error();
       const reader = response.body.getReader();
       const chunks:Uint8Array[] = [];

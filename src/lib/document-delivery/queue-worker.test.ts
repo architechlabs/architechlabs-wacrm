@@ -17,7 +17,7 @@ describe('isolated queue Worker preparation', () => {
     const request=f.env.DESK.fetch.mock.calls[0][0];
     expect(request.url).toBe('https://desk.internal/api/internal/admin-document-deliveries/process');
     expect(request.headers.get('authorization')).toBe(`Bearer ${token}`);
-    expect(await request.json()).toEqual(body); expect(request.redirect).toBe('error');
+    expect(await request.json()).toEqual(body); expect(request.redirect).toBe('manual');
   });
   it.each([{}, {ENABLE_ADMIN_DOCUMENT_QUEUE_CONSUMER:'false'}, {ADMIN_DOCUMENT_WORKER_TOKEN:'bad'}, {DESK:undefined}])('holds disabled/missing configuration for DLQ without sending: %j', async overrides => {
     const f=fixture(); const env=Object.keys(overrides).length ? {...f.env,...overrides} : {};

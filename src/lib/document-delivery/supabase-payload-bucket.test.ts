@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { DOCUMENT_PAYLOAD_BUCKET, SupabasePayloadBucket } from './supabase-payload-bucket';
+import { DOCUMENT_PAYLOAD_BUCKET, documentStorageFetch, SupabasePayloadBucket } from './supabase-payload-bucket';
 import { MAX_ENCRYPTED_PAYLOAD_BYTES } from './queue-payloads';
 
 const path = `admin-document-jobs/v1/11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222/${'a'.repeat(64)}`;
@@ -18,6 +18,11 @@ function fixture() {
   return { storage, files, bucket: new SupabasePayloadBucket({ storage } as unknown as SupabaseClient) };
 }
 describe('private Supabase document payloads', () => {
+  it('uses edge-compatible manual redirect handling and refuses credential forwarding',async () => {
+    const fetcher=vi.fn<typeof fetch>().mockResolvedValue(new Response(null,{status:307,headers:{Location:'https://evil.example'}}));
+    await expect(documentStorageFetch(fetcher)('https://project.supabase.co/storage/v1/bucket/private',{headers:{Authorization:'Bearer synthetic'}})).rejects.toMatchObject({code:'document_payload_unavailable'});
+    expect(fetcher).toHaveBeenCalledTimes(1);expect(fetcher.mock.calls[0][1]?.redirect).toBe('manual');
+  });
   it('refuses public buckets or an unexpected size limit', async () => {
     const f = fixture();
     await f.bucket.verifyPrivate();

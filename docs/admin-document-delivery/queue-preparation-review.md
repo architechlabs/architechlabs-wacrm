@@ -1,5 +1,10 @@
 # Queued document delivery release
 
+Latest verified state: [2026-10-14 resume receipt](resume-2026-10-14.md).
+The private Supabase bucket, existing Inbox schema and three approved PDF policies
+are verified; the Desk/consumer runtime fix is deployed with switches OFF.
+Older preparation-only and migration-pending statements below are historical.
+
 ## Current rollout — 2026-10-13
 
 The user authorized production deployment and deferred backup upload and the

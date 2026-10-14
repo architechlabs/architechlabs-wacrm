@@ -1,5 +1,16 @@
 # Admin quotation delivery configuration - NOT activated
 
+## Latest status - 2026-10-14
+
+Work resumed after Meta approval. The live quotation, proforma and tax templates
+were independently verified as APPROVED / UTILITY / DOCUMENT in the configured
+WABA, with exact IDs, bodies and variable maps. The Desk and isolated consumer
+have the edge-runtime redirect fix deployed, and the three policies are configured.
+Live private readiness passes for all three templates and private PDF storage.
+Sending remains OFF; the matching admin API/UI changes are local, not released.
+See [the current release receipt](resume-2026-10-14.md). It supersedes conflicting
+historical rollout statements below; do not rerun migrations 045/046 or the index.
+
 ## Current local revision: reuse the existing Inbox
 
 Document sending now reserves **one row in the existing `messages` table** under
@@ -182,7 +193,13 @@ AWS. A separately reviewed OFF-adoption scope is still required, preserving the
 exact ARN, disabled flag, policy, stack parameters, alias/version and all unrelated
 environment variables. Do not bypass the guard or use another legacy workflow.
 
-## Staging-first schema/release procedure (not executed on production)
+## Staging-first schema/release procedure
+
+Migration 046, the separate concurrent index and constraint validation were
+applied to production on 2026-10-13 after an isolated public-schema/data restore
+smoke test. All ten read-only catalog checks passed; sending remains OFF. The
+steps below are retained as the reviewed procedure, **not instructions to rerun
+the migration or index**. See `backup-and-recovery.md` for the scoped receipt.
 
 1. Confirm the exact project and inspect existing migrations 017/040, message
    columns, RLS, realtime settings and triggers. Obtain a database backup/export

@@ -73,13 +73,25 @@ export class SupabasePayloadBucket implements PrivateBucket {
   }
 }
 
+// Native workerd rejects redirect:"error". Explicitly refusing all 3xx keeps
+// the service credential on the original fixed project without following a URL.
+export function documentStorageFetch(fetcher: typeof fetch = fetch): typeof fetch {
+  return async (input, init) => {
+    const response = await fetcher(input, {
+      ...init, redirect: 'manual',
+      signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : [])]),
+    });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      throw new DocumentDeliveryError('document_payload_unavailable',503);
+    }
+    return response;
+  };
+}
 export async function privateSupabasePayloadBucket() {
   const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
     auth: { persistSession: false, autoRefreshToken: false },
-    global: { fetch: (input, init) => fetch(input, {
-      ...init, redirect: 'error',
-      signal: AbortSignal.any([AbortSignal.timeout(5_000), ...(init?.signal ? [init.signal] : [])]),
-    }) },
+    global: { fetch: documentStorageFetch() },
   });
   const bucket = new SupabasePayloadBucket(db);
   await bucket.verifyPrivate();

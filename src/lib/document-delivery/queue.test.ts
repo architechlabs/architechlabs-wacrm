@@ -30,6 +30,20 @@ async function fixture() {
   return {accountId,document,record,store,claims,payloads,queue,transport,job,policy,now:1000,events};
 }
 describe('local metadata-only document queue preparation', () => {
+  it('retains payment attestation in the encrypted payload and revalidates it before sending', async () => {
+    const f=await fixture();
+    const policy:DocumentPolicy={...f.policy,kind:'tax',bodyText:'Dear {{1}}, payment received; tax invoice {{2}}.'};
+    const input:DocumentInput={kind:'tax',documentNumber:'T1',to:'+919876543210',consentConfirmed:true,paymentReceivedConfirmed:true,
+      fields:{customerName:'Synthetic',documentNumber:'T1'},pdfBase64:f.document.pdfBase64};
+    const document=prepareDocument(input,policy);
+    f.record.fingerprint=document.fingerprint;
+    await enqueueDocument({...f,policy,document});
+    expect(f.payloads.put).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({document:expect.objectContaining({paymentReceivedConfirmed:true})}));
+    // Tampered/missing attestation must hold the job before Meta access.
+    f.payloads.get.mockResolvedValue({policy,document:{...input,paymentReceivedConfirmed:undefined}});
+    expect(await consumeDocumentJob({...f,policy,job:{...f.job,fingerprint:document.fingerprint}})).toBe('held');
+    expect(f.transport.send).not.toHaveBeenCalled();
+  });
   it('reserves the existing Inbox row, stores the payload, then acknowledges queued only', async () => {
     const f = await fixture();
     expect(await enqueueDocument(f)).toEqual({deliveryId:id,messageId:id,status:'queued',alreadySent:false});
