@@ -1,0 +1,21 @@
+{
+  "status": "DRAFTS_FOR_META_APPROVAL_ONLY_NOT_RUNTIME_CONFIGURATION",
+  "category": "UTILITY",
+  "language": "en_US",
+  "headerFormat": "DOCUMENT",
+  "buttons": [],
+  "drafts": [
+    {
+      "kind": "tax",
+      "suggestedName": "tax_invoice_document_pdf",
+      "bodyText": "Dear {{1}},\n\nYour tax invoice from Architech Labs is attached for your records.\n\nInvoice Number: {{2}}\nInvoice Date: {{3}}\nOrder Reference: {{4}}\nTotal Invoice Amount: {{5}}\n\nPlease review the attached PDF and contact our team if you have any questions.\n\nThank you for choosing Architech Labs.\n\nArchitech Labs",
+      "fields": ["customerName", "documentNumber", "documentDate", "orderReference", "amount"]
+    },
+    {
+      "kind": "proforma",
+      "suggestedName": "proforma_invoice_pdf",
+      "bodyText": "Dear {{1}},\n\nPlease find attached your proforma invoice from Architech Labs. This is not a tax invoice.\n\nProforma Number: {{2}}\nProforma Date: {{3}}\nOrder Reference: {{4}}\nTotal Proforma Amount: {{5}}\n\nPlease review the attached PDF for the details and terms, and contact our team if you have any questions.\n\nArchitech Labs",
+      "fields": ["customerName", "documentNumber", "documentDate", "orderReference", "amount"]
+    }
+  ]
+}

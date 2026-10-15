@@ -11,16 +11,10 @@ export async function GET(request: Request, {params}: {params:Promise<{deliveryI
     if (ctx.accountId !== config.accountId) throw new DocumentDeliveryError('forbidden',403);
     const {deliveryId} = await params;
     if (!/^[0-9a-f-]{36}$/i.test(deliveryId)) throw new DocumentDeliveryError('invalid_delivery_id',400);
-    const {data,error} = await ctx.supabase.from('admin_document_deliveries').select('id,state,message_id').eq('account_id',ctx.accountId).eq('id',deliveryId).maybeSingle();
+    const {data,error} = await ctx.supabase.from('messages').select('id,admin_document_state,status')
+      .eq('admin_document_account_id',ctx.accountId).eq('id',deliveryId).maybeSingle();
     if (error) throw new DocumentDeliveryError('document_storage_unavailable',503);
     if (!data) throw new DocumentDeliveryError('not_found',404);
-    let messageStatus: string | null = null;
-    if (data.message_id) {
-      // The outbox's immutable account-scoped link is the authorization boundary.
-      const result = await ctx.supabase.from('messages').select('status').eq('id',data.message_id).maybeSingle();
-      if (result.error) throw new DocumentDeliveryError('document_storage_unavailable',503);
-      messageStatus = result.data?.status ?? null;
-    }
-    return documentResponse({deliveryId:data.id,status:data.state,messageStatus});
+    return documentResponse({deliveryId:data.id,status:data.admin_document_state,messageStatus:data.status});
   } catch (error) { return documentError(error); }
 }

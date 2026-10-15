@@ -33,28 +33,31 @@ describe('private document attachment access',() => {
     expect(mocks.admin).not.toHaveBeenCalled();expect(mocks.download).not.toHaveBeenCalled();
   });
   it('scopes attachment lookup to the signed-in account and accepted state',async () => {
-    const outbox=query(null);mocks.admin.mockReturnValue({from:vi.fn(() => outbox)});
+    const message=query(null);mocks.admin.mockReturnValue({from:vi.fn(() => message)});
     expect((await GET(request,context)).status).toBe(404);
-    expect(outbox.eq).toHaveBeenCalledWith('account_id',accountId);
-    expect(outbox.eq).toHaveBeenCalledWith('id',deliveryId);
-    expect(outbox.eq).toHaveBeenCalledWith('state','accepted');
+    expect(message.eq).toHaveBeenCalledWith('admin_document_account_id',accountId);
+    expect(message.eq).toHaveBeenCalledWith('id',deliveryId);
+    expect(message.eq).toHaveBeenCalledWith('admin_document_state','accepted');
     expect(mocks.download).not.toHaveBeenCalled();
   });
   it('denies access if the member cannot read the linked inbox message through RLS',async () => {
-    const outbox=query({message_id:'message',meta_media_id:'456',filename:'invoice.pdf',pdf_sha256:'hash'});
-    mocks.admin.mockReturnValue({from:vi.fn(() => outbox)});mocks.visible.mockReturnValue(query(null));
+    const message=query({id:deliveryId,message_id:'wamid.example',admin_document_media_id:'456',admin_document_metadata:{filename:'invoice.pdf',pdfSha256:'hash'}});
+    mocks.admin.mockReturnValue({from:vi.fn(() => message)});mocks.visible.mockReturnValue(query(null));
     expect((await GET(request,context)).status).toBe(404);
     expect(mocks.decrypt).not.toHaveBeenCalled();expect(mocks.download).not.toHaveBeenCalled();
   });
   it('returns the exact verified bytes privately using the account-owned configuration',async () => {
-    const outbox=query({message_id:'message',meta_media_id:'456',filename:'invoice.pdf',pdf_sha256:'hash'});
+    const message=query({id:deliveryId,message_id:'wamid.example',admin_document_media_id:'456',admin_document_metadata:{filename:'invoice.pdf',pdfSha256:'hash'}});
     const settings=query({phone_number_id:'789',waba_id:'987',access_token:'encrypted'});
-    mocks.admin.mockReturnValue({from:vi.fn((table:string) => table==='whatsapp_config' ? settings : outbox)});
+    const from=vi.fn((table:string) => table==='whatsapp_config' ? settings : message);
+    mocks.admin.mockReturnValue({from});
     const response=await GET(request,context);
     expect(response.status).toBe(200);expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(response.headers.get('content-type')).toBe('application/pdf');expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(Buffer.from(await response.arrayBuffer())).toEqual(Buffer.from('%PDF-fixture'));
     expect(settings.eq).toHaveBeenCalledWith('account_id',accountId);
+    expect(from).not.toHaveBeenCalledWith('admin_document_deliveries');
+    expect(mocks.visible.mock.results[0].value.eq).toHaveBeenCalledWith('id',deliveryId);
     expect(mocks.download).toHaveBeenCalledWith('456','hash');
   });
   it('does not expose credentials or provider errors from an expired attachment',async () => {

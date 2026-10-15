@@ -1,0 +1,17 @@
+{
+  // REVIEW-ONLY snippet for the EXISTING Desk Worker. Not a deployable replacement
+  // for wrangler.jsonc. Merge only reviewed bindings; preserve all existing vars.
+  "vars": { "ENABLE_ADMIN_DOCUMENT_QUEUE": "false" },
+  "queues": { "producers": [{
+    "binding": "ADMIN_DOCUMENT_QUEUE", "queue": "review-required-admin-documents-staging"
+  }] },
+  "r2_buckets": [{
+    "binding": "ADMIN_DOCUMENT_PAYLOADS", "bucket_name": "review-required-admin-document-payloads-staging"
+  }]
+  // Separate secret bindings required on Desk:
+  // ADMIN_DOCUMENT_PAYLOAD_KEY (32 random bytes as hex; do NOT reuse Meta key)
+  // ADMIN_DOCUMENT_WORKER_TOKEN (32 independent random bytes as hex)
+  // Private bucket: NO r2.dev/custom-domain public access or CORS exposure.
+  // Review/apply one-day object lifecycle before accepting jobs; customMetadata
+  // expiresAt is an integrity field, NOT an R2 auto-deletion setting.
+}

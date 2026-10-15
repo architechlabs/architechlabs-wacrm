@@ -1,0 +1,26 @@
+[
+  {
+    "kind": "quotation",
+    "name": "quotation_pdf",
+    "language": "en_US",
+    "metaTemplateId": "1277253704541513",
+    "bodyText": "Dear {{1}},\n\nPlease find attached the quotation prepared by Architech Labs for your requirements.\n\nQuotation Number: {{2}}\nQuotation Date: {{3}}\nProduct / Project: {{4}}\nQuotation Amount: {{5}}\nValid Until: {{6}}\n\nThe attached PDF contains the quotation details, pricing, and terms and conditions.\n\nPlease review it and contact our team if you have any questions or require clarification.\n\nThank you for considering Architech Labs.\n\nArchitech Labs",
+    "fields": ["customerName", "documentNumber", "documentDate", "project", "amount", "validUntil"]
+  },
+  {
+    "kind": "proforma",
+    "name": "proforma_invoice_pdf",
+    "language": "en_US",
+    "metaTemplateId": "1096868216503353",
+    "bodyText": "Dear {{1}},\n\nYour Proforma Invoice from Architech Labs is ready.\n\nProforma Invoice Number: {{2}}\nInvoice Date: {{3}}\nOrder / Project Reference: {{4}}\nTotal Amount: {{5}}\nValid Until: {{6}}\n\nPlease find the Proforma Invoice PDF attached to this message for your review.\n\nKindly review the details and arrange payment as per the payment terms mentioned in the document.\n\nIf you have any questions or require any changes, please contact our team.\n\nThank you for choosing Architech Labs.\n\nArchitech Labs",
+    "fields": ["customerName", "documentNumber", "documentDate", "orderReference", "amount", "validUntil"]
+  },
+  {
+    "kind": "tax",
+    "name": "tax_invoice_pdf",
+    "language": "en_US",
+    "metaTemplateId": "1416323569963592",
+    "bodyText": "Dear {{1}},\n\nYour payment has been received successfully, and your tax invoice from Architech Labs is ready.\n\nInvoice Number: {{2}}\nInvoice Date: {{3}}\nOrder Reference: {{4}}\nTotal Invoice Amount: {{5}}\n\nPlease find your tax invoice attached to this message for your records.\n\nThank you for choosing Architech Labs.\n\nArchitech Labs",
+    "fields": ["customerName", "documentNumber", "documentDate", "orderReference", "amount"]
+  }
+]

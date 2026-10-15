@@ -25,6 +25,7 @@ export interface DocumentInput {
   documentNumber: string;
   to: string;
   consentConfirmed: true;
+  paymentReceivedConfirmed?: true;
   fields: Partial<Record<FieldName, string>>;
   pdfBase64: string;
   revision?: number;
@@ -62,8 +63,8 @@ export function documentConfiguration(env: Record<string,string|undefined> = pro
           /\{\{(?!\d+\}\})/.test(p.bodyText) || !p.fields.includes('customerName') || !p.fields.includes('documentNumber')) throw new Error();
       // Require document-specific wording. Tax delivery is NOT proof of payment.
       if (p.kind === 'quotation' && (!/quotation/i.test(p.bodyText) || /tax invoice|proforma/i.test(p.bodyText))) throw new Error();
-      if (p.kind === 'proforma' && (!/proforma/i.test(p.bodyText) || !/not a tax invoice/i.test(p.bodyText))) throw new Error();
-      if (p.kind === 'tax' && (!/tax invoice/i.test(p.bodyText) || /proforma|payment|paid|receipt|received|settled/i.test(p.bodyText))) throw new Error();
+      if (p.kind === 'proforma' && !/proforma invoice/i.test(p.bodyText)) throw new Error();
+      if (p.kind === 'tax' && (!/tax invoice/i.test(p.bodyText) || /proforma/i.test(p.bodyText))) throw new Error();
       kinds.add(p.kind);
     }
     return { accountId, policies: policies as DocumentPolicy[] };
@@ -72,12 +73,20 @@ export function documentConfiguration(env: Record<string,string|undefined> = pro
   }
 }
 
+// A manual invoice does not prove payment. Keep the approved wording, but require
+// an explicit operator attestation for any tax template containing payment claims.
+export function requiresPaymentConfirmation(policy: Pick<DocumentPolicy, 'kind' | 'bodyText'>): boolean {
+  return policy.kind === 'tax' && /payment|paid|receipt|received|settled/i.test(policy.bodyText);
+}
+
 export function prepareDocument(value: unknown, policy: DocumentPolicy): PreparedDocument {
   const fail = () => { throw new DocumentDeliveryError('invalid_document_request', 400); };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail();
   const input = value as DocumentInput;
-  if (Object.keys(input).some(k => !['kind','documentNumber','to','consentConfirmed','fields','pdfBase64','revision'].includes(k)) ||
+  if (Object.keys(input).some(k => !['kind','documentNumber','to','consentConfirmed','paymentReceivedConfirmed','fields','pdfBase64','revision'].includes(k)) ||
       input.kind !== policy.kind || input.consentConfirmed !== true || !/^\+[1-9]\d{6,14}$/.test(input.to ?? '') ||
+      (input.paymentReceivedConfirmed !== undefined && input.paymentReceivedConfirmed !== true) ||
+      (requiresPaymentConfirmation(policy) && input.paymentReceivedConfirmed !== true) ||
       (input.kind === 'quotation' ? !Number.isSafeInteger(input.revision) || input.revision! < 1 || input.revision! > 2147483647 : input.revision !== undefined) ||
       typeof input.documentNumber !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9/_.-]{0,39}$/.test(input.documentNumber) ||
       !input.fields || typeof input.fields !== 'object' || Array.isArray(input.fields) ||
@@ -91,7 +100,10 @@ export function prepareDocument(value: unknown, policy: DocumentPolicy): Prepare
   const parameters = policy.fields.map(f => input.fields[f]!);
   const pdfSha256 = sha256(pdf);
   const key = sha256(JSON.stringify([input.kind, input.documentNumber.toUpperCase(), input.to, input.revision ?? null]));
-  const fingerprint = sha256(JSON.stringify([input.kind, input.documentNumber, input.to, input.revision ?? null, pdfSha256, policy, parameters]));
+  const fingerprintParts: unknown[] = [input.kind, input.documentNumber, input.to, input.revision ?? null, pdfSha256, policy, parameters];
+  // Preserve existing fingerprints for every previously supported document.
+  if (requiresPaymentConfirmation(policy)) fingerprintParts.push({paymentReceivedConfirmed:true});
+  const fingerprint = sha256(JSON.stringify(fingerprintParts));
   const filename = `${input.documentNumber.replace(/[^A-Za-z0-9-]/g,'-')}-${input.kind}.pdf`;
   const renderedBody = policy.bodyText.replace(/\{\{(\d+)\}\}/g, (_, n: string) => parameters[Number(n)-1]);
   return { ...input, pdf, pdfSha256, key, fingerprint, filename, parameters, renderedBody };
