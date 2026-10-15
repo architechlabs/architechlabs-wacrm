@@ -45,9 +45,11 @@ objects after processing. Public smoke checks still returned Admin API health
 200, dashboard quotation 200, Desk login 200, unauthenticated Inbox redirect,
 Razorpay GET 405 and document API 401.
 
-The recipient's own visual confirmation that the PDF opens with expected content
-is still pending. Do not clear permanent delivery claims or automatically resend
-uncertain jobs.
+The recipient confirmed that the WhatsApp message arrived and its PDF opened
+with the expected quotation. This completes quotation end-to-end acceptance.
+Proforma and tax use the same queue and passed approved-template/storage checks,
+but have not each received a separate live-send acceptance test. Do not clear
+permanent delivery claims or automatically resend uncertain jobs.
 
 ## Rollback
 
