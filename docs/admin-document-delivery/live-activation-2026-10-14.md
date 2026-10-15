@@ -27,15 +27,27 @@ Private temporary PDFs use the existing Supabase Storage bucket.
 - Synthetic isolated Worker runtime passed queue, private PDF, Meta acceptance,
   cleanup and redirect checks without sending a real message.
 
-## Acceptance still pending
+## Internal acceptance
 
-An authenticated dashboard end-to-end send to the explicitly approved internal
-number `+91 8054985500` is pending operator action. Browser automation had no
-available signed-in browser session. Do not claim actual delivery until the
-Inbox message, Meta acknowledgement and attachment are verified. Test only a
-quotation whose contact number is exactly the approved internal number; do not
-redirect a customer's quotation for testing. Do not clear permanent delivery
-claims or automatically resend uncertain jobs.
+Browser automation had no available signed-in session, so the operator sent a
+fresh internal quotation from the authenticated dashboard to the previously
+approved `+91 8054985500` test number. The first attempt used a quotation
+already expired on 10 October; the API rejected it before any Inbox reservation
+or WhatsApp send. It must not be retried as an uncertain delivery.
+
+The new quotation `AL-QTN-2026-66241AE3` produced exactly one protected Inbox
+record. Read-only Supabase checks confirmed the recipient was the approved test
+number, consent time was recorded, the PDF upload ID and Meta message ID are
+present, and the attachment route is private. The state advanced through
+`reserved/sending` to `accepted/read` after Meta's webhook. The private
+temporary-payload bucket remained non-public and held zero pending document
+objects after processing. Public smoke checks still returned Admin API health
+200, dashboard quotation 200, Desk login 200, unauthenticated Inbox redirect,
+Razorpay GET 405 and document API 401.
+
+The recipient's own visual confirmation that the PDF opens with expected content
+is still pending. Do not clear permanent delivery claims or automatically resend
+uncertain jobs.
 
 ## Rollback
 
