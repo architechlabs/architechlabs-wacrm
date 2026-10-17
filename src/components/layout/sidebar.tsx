@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useTotalUnread } from "@/hooks/use-total-unread";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
 import { BrandLockup } from "@/components/brand-lockup";
+import { SidebarNumberSwitcher } from "@/components/inbox/sidebar-number-switcher";
 import {
   Bell,
   Bot,
@@ -200,6 +201,8 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        <SidebarNumberSwitcher />
 
         {/* Main navigation */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">

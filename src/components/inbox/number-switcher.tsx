@@ -10,10 +10,10 @@ function label(row: { display_phone_number?: string | null; verified_name?: stri
 export function NumberSwitcher() {
   const t = useTranslations('Header');
   const { numbers, selectedId, selectNumber, ready } = useWhatsAppNumber();
-  if (!ready || numbers.length === 0) return null;
+  if (!ready || numbers.length < 2) return null;
 
   return (
-    <label className="hidden min-w-0 items-center gap-2 sm:flex">
+    <label className="flex min-w-0 items-center gap-2">
       <span className="sr-only">{t('whatsappNumber')}</span>
       <select
         aria-label={t('whatsappNumber')}
