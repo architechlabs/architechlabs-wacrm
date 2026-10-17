@@ -55,6 +55,7 @@ import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { ImportModal } from '@/components/contacts/import-modal';
 import { CustomFieldsManager } from '@/components/contacts/custom-fields-manager';
 import { useCan } from '@/hooks/use-can';
+import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
 import {
@@ -74,6 +75,7 @@ export default function ContactsPage() {
   const supabase = createClient();
   const canEdit = useCan('send-messages');
   const canEditSettings = useCan('edit-settings');
+  const { selectedId: whatsappConfigId, ready: lineReady } = useWhatsAppNumber();
 
   const [contacts, setContacts] = useState<ContactWithTags[]>([]);
   const [loading, setLoading] = useState(true);
@@ -131,6 +133,14 @@ export default function ContactsPage() {
     // act on rows the user can no longer see.
     setSelected(new Set());
 
+    if (!lineReady) return;
+    if (!whatsappConfigId) {
+      setContacts([]);
+      setTotalCount(0);
+      setLoading(false);
+      return;
+    }
+
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
     const term = search.trim();
@@ -148,6 +158,7 @@ export default function ContactsPage() {
         p_search: term || null,
         p_limit: PAGE_SIZE,
         p_offset: from,
+        p_whatsapp_config_id: whatsappConfigId,
       });
       if (seq !== fetchSeq.current) return; // superseded by a newer fetch
       if (error) {
@@ -162,6 +173,7 @@ export default function ContactsPage() {
       let query = supabase
         .from('contacts')
         .select('*', { count: 'exact' })
+        .eq('whatsapp_config_id', whatsappConfigId)
         .order('created_at', { ascending: false })
         .range(from, to);
 
@@ -208,7 +220,7 @@ export default function ContactsPage() {
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, t]);
+  }, [supabase, page, search, selectedTagIds, t, whatsappConfigId, lineReady]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not

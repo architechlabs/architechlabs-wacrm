@@ -7,6 +7,7 @@ import { SupabaseDocumentDeliveryStore } from '@/lib/document-delivery/store';
 import { DocumentMetaClient } from '@/lib/document-delivery/meta';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config';
 import { enforceTemplateDeliveryRestriction } from '@/lib/whatsapp/send-message';
 import type { ApiKeyContext } from '@/lib/auth/api-context';
 
@@ -63,8 +64,8 @@ export async function POST(request: Request) {
     if (row.admin_document_state === 'reserved') {
       await enforceTemplateDeliveryRestriction(db,row.conversation_id,policy.name);
     }
-    const {data:settings,error:settingsError} = await db.from('whatsapp_config').select('phone_number_id,access_token,waba_id').eq('account_id',job.accountId).single();
-    if (settingsError || !settings) throw new Error();
+    const settings = await resolveWhatsAppConfig(db, { accountId: job.accountId }).catch(() => null);
+    if (!settings?.waba_id) throw new Error();
     const {payloads} = await documentQueueRuntime();
     const result = await consumeDocumentJob({job,accountId:job.accountId,policy,
       record:{id:row.id,fingerprint:row.admin_document_fingerprint,state:row.admin_document_state,messageId:row.message_id ? row.id : null},

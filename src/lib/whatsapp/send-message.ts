@@ -34,7 +34,8 @@ import {
   interactivePayloadPreviewText,
   type InteractiveMessagePayload,
 } from '@/lib/whatsapp/interactive';
-import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
+import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
+import { resolveWhatsAppConfig, WhatsAppConfigLookupError } from '@/lib/whatsapp/resolve-config';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import {
   sanitizePhoneForMeta,
@@ -308,19 +309,23 @@ export async function sendMessageToConversation(
     );
   }
 
-  // WhatsApp config, account-scoped.
-  const { data: config, error: configError } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', accountId)
-    .maybeSingle();
-
-  if (configError) {
-    throw new SendMessageError(
-      'whatsapp_config_unavailable',
-      'Saved WhatsApp settings could not be loaded. Please retry later; do not reconfigure your credentials.',
-      503,
-    );
+  // The conversation's line, then the contact's line, then the default.
+  let config
+  try {
+    config = await resolveWhatsAppConfig(db, {
+      accountId,
+      conversationId,
+      contactId: contact.id,
+    })
+  } catch (err) {
+    if (err instanceof WhatsAppConfigLookupError) {
+      throw new SendMessageError(
+        'whatsapp_config_unavailable',
+        'Saved WhatsApp settings could not be loaded. Please retry later; do not reconfigure your credentials.',
+        503,
+      )
+    }
+    throw err
   }
   if (!config) {
     throw new SendMessageError(

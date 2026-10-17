@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
+import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { toast } from 'sonner';
 import { MessageTemplate } from '@/types';
 import { Step1ChooseTemplate } from '@/components/broadcasts/step1-choose-template';
@@ -25,6 +26,7 @@ export default function NewBroadcastPage() {
   const router = useRouter();
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
+  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
   const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSending();
 
   const [currentStep, setCurrentStep] = useState(0);
@@ -100,10 +102,15 @@ export default function NewBroadcastPage() {
       toast.error(t('toastNotLinked'));
       return;
     }
+    if (!whatsappConfigId) {
+      toast.error(t('toastNotLinked'));
+      return;
+    }
 
     const { error } = await supabase.from('broadcasts').insert({
       user_id: user.id,
       account_id: accountId,
+      whatsapp_config_id: whatsappConfigId,
       name: name.trim(),
       template_name: template.name,
       template_language: template.language ?? 'en_US',

@@ -45,11 +45,11 @@ BEGIN
   -- Phase 2B Inbox pagination contracts (043). Keep this structural; the
   -- behavioral/security matrix lives in test-inbox-pagination.sql.
   IF to_regprocedure(
-    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)'
+    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text,uuid)'
   ) IS NULL THEN
     RAISE EXCEPTION 'get_inbox_conversations_page is missing — migration 043 did not apply';
   END IF;
-  IF to_regprocedure('public.get_inbox_company_options(uuid)') IS NULL THEN
+  IF to_regprocedure('public.get_inbox_company_options(uuid,uuid)') IS NULL THEN
     RAISE EXCEPTION 'get_inbox_company_options is missing — migration 043 did not apply';
   END IF;
 
@@ -58,9 +58,9 @@ BEGIN
     FROM pg_proc
     WHERE oid IN (
       to_regprocedure(
-        'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)'
+        'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text,uuid)'
       ),
-      to_regprocedure('public.get_inbox_company_options(uuid)')
+      to_regprocedure('public.get_inbox_company_options(uuid,uuid)')
     )
       AND prosecdef
   ) THEN
@@ -69,11 +69,11 @@ BEGIN
 
   IF has_function_privilege(
     'anon',
-    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)',
+    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text,uuid)',
     'EXECUTE'
   ) OR has_function_privilege(
     'anon',
-    'public.get_inbox_company_options(uuid)',
+    'public.get_inbox_company_options(uuid,uuid)',
     'EXECUTE'
   ) THEN
     RAISE EXCEPTION 'anon must not execute Inbox pagination functions';
@@ -81,11 +81,11 @@ BEGIN
 
   IF NOT has_function_privilege(
     'authenticated',
-    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text)',
+    'public.get_inbox_conversations_page(uuid,integer,timestamptz,uuid,text,text,uuid[],text,uuid)',
     'EXECUTE'
   ) OR NOT has_function_privilege(
     'authenticated',
-    'public.get_inbox_company_options(uuid)',
+    'public.get_inbox_company_options(uuid,uuid)',
     'EXECUTE'
   ) THEN
     RAISE EXCEPTION 'authenticated must be able to execute Inbox pagination functions';

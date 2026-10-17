@@ -19,6 +19,7 @@ import {
   MEDIA_MAX_BYTES_BY_KIND,
 } from '@/lib/storage/upload-media';
 import { useAuth } from '@/hooks/use-auth';
+import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -128,6 +129,7 @@ export function TemplateManager() {
   const t = useTranslations('Settings.templates');
   const supabase = createClient();
   const { user, loading: authLoading } = useAuth();
+  const { selected, selectedId } = useWhatsAppNumber();
 
   const [loading, setLoading] = useState(true);
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
@@ -196,7 +198,9 @@ export function TemplateManager() {
         .eq('user_id', userId)
         .order('created_at', { ascending: false });
       if (error) throw error;
-      setTemplates(data || []);
+      const wabaId = selected?.waba_id;
+      const rows = (data || []) as MessageTemplate[];
+      setTemplates(wabaId ? rows.filter((row) => row.waba_id === wabaId) : rows);
     } catch (err) {
       console.error('Failed to fetch templates:', err);
       toast.error(t('toastLoadFailed'));
@@ -270,7 +274,7 @@ export function TemplateManager() {
       const res = await fetch(url, {
         method: isEdit ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildSubmitPayload()),
+        body: JSON.stringify({ ...buildSubmitPayload(), whatsapp_config_id: selectedId }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -305,7 +309,11 @@ export function TemplateManager() {
     if (!user) return;
     setSyncing(true);
     try {
-      const res = await fetch('/api/whatsapp/templates/sync', { method: 'POST' });
+      const res = await fetch('/api/whatsapp/templates/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ whatsapp_config_id: selectedId }),
+      });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data?.error || `Sync failed (HTTP ${res.status})`);

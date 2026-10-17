@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
+import { useWhatsAppNumber } from "@/hooks/use-whatsapp-number";
 
 interface DealFormProps {
   open: boolean;
@@ -56,6 +57,7 @@ export function DealForm({
   const t = useTranslations("Pipelines.form");
   const supabase = createClient();
   const { accountId, defaultCurrency } = useAuth();
+  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
 
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
@@ -113,7 +115,7 @@ export function DealForm({
     let cancelled = false;
     (async () => {
       const [c, p] = await Promise.all([
-        supabase.from("contacts").select("*").order("name"),
+        supabase.from("contacts").select("*").eq("whatsapp_config_id", whatsappConfigId ?? "").order("name"),
         supabase.from("profiles").select("*").order("full_name"),
       ]);
       if (cancelled) return;

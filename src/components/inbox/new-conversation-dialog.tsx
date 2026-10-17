@@ -21,6 +21,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { createClient } from '@/lib/supabase/client';
+import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { cn } from '@/lib/utils';
 import { isValidE164, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 import {
@@ -49,6 +50,7 @@ export function NewConversationDialog({
   onConversationReady,
 }: NewConversationDialogProps) {
   const t = useTranslations('Inbox.newConversation');
+  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
   const [mode, setMode] = useState<TargetMode>('existing');
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [contactsLoading, setContactsLoading] = useState(true);
@@ -73,6 +75,7 @@ export function NewConversationDialog({
       const { data, error } = await supabase
         .from('contacts')
         .select('id, user_id, account_id, phone, name, created_at, updated_at')
+        .eq('whatsapp_config_id', whatsappConfigId ?? '')
         .order('name', { ascending: true });
       if (cancelled) return;
       if (error) {

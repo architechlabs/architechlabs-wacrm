@@ -36,17 +36,16 @@ export async function findExistingContact(
   db: SupabaseClient,
   accountId: string,
   phone: string,
+  whatsappConfigId?: string | null,
 ): Promise<ExistingContact | null> {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
 
   const suffix = normalized.length >= 8 ? normalized.slice(-8) : normalized;
 
-  const { data, error } = await db
-    .from("contacts")
-    .select("*")
-    .eq("account_id", accountId)
-    .like("phone", `%${suffix}`);
+  let query = db.from("contacts").select("*").eq("account_id", accountId);
+  if (whatsappConfigId) query = query.eq("whatsapp_config_id", whatsappConfigId);
+  const { data, error } = await query.like("phone", `%${suffix}`);
 
   if (error || !data) return null;
 

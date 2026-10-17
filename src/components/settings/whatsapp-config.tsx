@@ -30,10 +30,50 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
-import { readWhatsAppConfig, type SavedWhatsAppConfig } from '@/lib/settings/read-whatsapp-config';
+import { readWhatsAppNumbers, type SavedWhatsAppConfig } from '@/lib/settings/read-whatsapp-config';
 import { readWithTimeout } from '@/lib/http/read-with-timeout';
 
 const MASKED_TOKEN = '••••••••••••••••';
+
+declare global {
+  interface Window {
+    FB?: {
+      init: (options: Record<string, unknown>) => void;
+      login: (
+        callback: (response: { authResponse?: { code?: string } }) => void,
+        options: Record<string, unknown>,
+      ) => void;
+    };
+    fbAsyncInit?: () => void;
+  }
+}
+
+function loadFacebookSdk(appId: string) {
+  return new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      window.FB?.init({
+        appId,
+        cookie: true,
+        xfbml: false,
+        version: process.env.NEXT_PUBLIC_META_GRAPH_API_VERSION || 'v21.0',
+      });
+      resolve();
+    };
+    if (window.FB) {
+      finish();
+      return;
+    }
+    window.fbAsyncInit = finish;
+    const existing = document.getElementById('facebook-jssdk');
+    if (existing) return;
+    const script = document.createElement('script');
+    script.id = 'facebook-jssdk';
+    script.async = true;
+    script.src = 'https://connect.facebook.net/en_US/sdk.js';
+    script.onerror = () => reject(new Error('Could not load the Facebook SDK'));
+    document.body.appendChild(script);
+  });
+}
 
 type ConnectionStatus = 'connected' | 'saved' | 'disconnected' | 'unknown';
 type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
@@ -63,6 +103,7 @@ export function WhatsAppConfig() {
   const [loadError, setLoadError] = useState(false);
   const [configAccountId, setConfigAccountId] = useState<string | null>(null);
   const configReadRef = useRef<AbortController | null>(null);
+  const editingIdRef = useRef<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -74,6 +115,10 @@ export function WhatsAppConfig() {
   // again and overwrites whatever the user typed but hadn't saved yet.
   const loadedAccountIdRef = useRef<string | null>(null);
 
+  const [numbers, setNumbers] = useState<SavedWhatsAppConfig[]>([]);
+  const [onBizApp, setOnBizApp] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const sessionInfoRef = useRef<{ waba_id?: string; phone_number_id?: string } | null>(null);
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [wabaId, setWabaId] = useState('');
   const [accessToken, setAccessToken] = useState('');
@@ -129,14 +174,18 @@ export function WhatsAppConfig() {
       // account sees the same saved configuration. UNIQUE(account_id)
       // on the table guarantees the .maybeSingle() return type
       // remains accurate.
-      const data = await readWhatsAppConfig(supabase, acctId, request.signal);
+      const rows = await readWhatsAppNumbers(supabase, acctId, request.signal);
       if (request.signal.aborted) return;
       setConfigAccountId(acctId);
+      setNumbers(rows);
+      const data = rows.find((row) => row.id === editingIdRef.current) ?? rows.find((row) => row.is_default) ?? rows[0] ?? null;
+      editingIdRef.current = data?.id ?? null;
 
       if (data) {
         setConfig(data);
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
+        setOnBizApp(Boolean(data.is_on_biz_app));
         setAccessToken(MASKED_TOKEN);
         setVerifyToken('');
         setPin('');
@@ -148,6 +197,7 @@ export function WhatsAppConfig() {
         setConfig(null);
         setPhoneNumberId('');
         setWabaId('');
+        setOnBizApp(false);
         setAccessToken('');
         setVerifyToken('');
         setPin('');
@@ -178,6 +228,22 @@ export function WhatsAppConfig() {
   }, [accountId, user?.id]);
 
   useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (!String(event.origin).endsWith('facebook.com')) return;
+      try {
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data?.type === 'WA_EMBEDDED_SIGNUP' && data.data) {
+          sessionInfoRef.current = data.data;
+        }
+      } catch {
+        // Non-JSON messages from the Facebook SDK are ignored.
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  useEffect(() => {
     // Need both the auth session (`!authLoading`) AND the profile
     // (`!profileLoading`, which carries `accountId`). Without the
     // second guard, the effect would fire with `accountId === null`
@@ -205,7 +271,7 @@ export function WhatsAppConfig() {
       const { error } = await supabase
         .from('whatsapp_config')
         .update({ mirror_inbound_media: next })
-        .eq('account_id', accountId);
+        .eq('id', config.id);
       if (error) throw new Error(error.message);
       setConfig({ ...config, mirror_inbound_media: next });
     } catch (error) {
@@ -236,8 +302,10 @@ export function WhatsAppConfig() {
       // and writing direct to Supabase stores the token in plaintext,
       // which then fails decryption on every subsequent health check.
       const payload: Record<string, unknown> = {
+        id: config?.id,
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
+        is_on_biz_app: onBizApp,
         verify_token: verifyToken.trim() || null,
         // Optional — only sent when the user filled it in. The server
         // requires it on first save or when changing numbers; for a
@@ -311,7 +379,8 @@ export function WhatsAppConfig() {
     try {
       setTesting(true);
       const payload = await readWithTimeout(async signal => {
-        const res = await fetch('/api/whatsapp/config', { method: 'GET', signal });
+        const configQuery = config?.id ? `?id=${encodeURIComponent(config.id)}` : '';
+        const res = await fetch(`/api/whatsapp/config${configQuery}`, { method: 'GET', signal });
         if (!res.ok) throw new Error('Connection check unavailable');
         const result = await res.json();
         if (['db_error', 'unknown', 'no_account'].includes(result.reason)) {
@@ -352,7 +421,8 @@ export function WhatsAppConfig() {
     setVerifyingRegistration(true);
     setRegistrationProbe(null);
     try {
-      const res = await fetch('/api/whatsapp/config/verify-registration', {
+      const configQuery = config?.id ? `?id=${encodeURIComponent(config.id)}` : '';
+      const res = await fetch(`/api/whatsapp/config/verify-registration${configQuery}`, {
         method: 'GET',
       });
       const data = (await res.json()) as RegistrationProbe;
@@ -381,7 +451,8 @@ export function WhatsAppConfig() {
 
     try {
       setResetting(true);
-      const res = await fetch('/api/whatsapp/config', { method: 'DELETE' });
+      const configQuery = config?.id ? `?id=${encodeURIComponent(config.id)}` : '';
+      const res = await fetch(`/api/whatsapp/config${configQuery}`, { method: 'DELETE' });
       const data = await res.json();
 
       if (!res.ok) {
@@ -404,6 +475,83 @@ export function WhatsAppConfig() {
       toast.error('Failed to reset configuration');
     } finally {
       setResetting(false);
+    }
+  }
+
+  function applyNumber(row: SavedWhatsAppConfig | null) {
+    editingIdRef.current = row?.id ?? null;
+    setConfig(row);
+    setPhoneNumberId(row?.phone_number_id || '');
+    setWabaId(row?.waba_id || '');
+    setOnBizApp(Boolean(row?.is_on_biz_app));
+    setAccessToken(row ? MASKED_TOKEN : '');
+    setVerifyToken('');
+    setPin('');
+    setTokenEdited(false);
+    setMirrorMedia(row ? row.mirror_inbound_media !== false : true);
+    setRegistrationProbe(null);
+    setConnectionStatus(row ? 'saved' : 'disconnected');
+  }
+
+  async function runNumberAction(id: string, action: 'default' | 'refresh' | 'subscribe') {
+    const res = await fetch(`/api/whatsapp/numbers/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast.error(data.error || 'Request failed');
+      return;
+    }
+    toast.success('Updated');
+    if (accountId) await fetchConfig(accountId);
+  }
+
+  async function handleConnectWhatsapp() {
+    const appId = process.env.NEXT_PUBLIC_META_APP_ID;
+    const configId = process.env.NEXT_PUBLIC_META_CONFIG_ID;
+    if (!appId || !configId) {
+      toast.error(t('embeddedSignupMissing'));
+      return;
+    }
+    setConnecting(true);
+    try {
+      await loadFacebookSdk(appId);
+      const code = await new Promise<string>((resolve, reject) => {
+        window.FB?.login((response) => {
+          const authCode = response.authResponse?.code;
+          if (!authCode) reject(new Error('Embedded Signup was cancelled'));
+          else resolve(authCode);
+        }, {
+          config_id: configId,
+          response_type: 'code',
+          override_default_response_type: true,
+          extras: {
+            setup: {},
+            featureType: 'whatsapp_business_app_onboarding',
+            sessionInfoVersion: '3',
+            version: 'v4',
+          },
+        });
+      });
+      const res = await fetch('/api/whatsapp/onboarding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          waba_id: sessionInfoRef.current?.waba_id,
+          phone_number_id: sessionInfoRef.current?.phone_number_id,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Embedded Signup failed');
+      toast.success('WhatsApp number connected');
+      if (accountId) await fetchConfig(accountId);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Embedded Signup failed');
+    } finally {
+      setConnecting(false);
     }
   }
 
@@ -451,6 +599,39 @@ export function WhatsAppConfig() {
         title={t("title")}
         description={t("description")}
       />
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>{t('numbersTitle')}</CardTitle>
+          <CardDescription>{numbers.length === 0 ? t('numbersEmpty') : t('description')}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {numbers.map((row) => (
+            <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
+              <button type="button" className="min-w-0 text-left" onClick={() => applyNumber(row)}>
+                <p className="font-medium text-foreground">{row.display_phone_number || row.phone_number_id}</p>
+                <p className="text-xs text-muted-foreground">
+                  {row.verified_name || row.waba_id} · {row.source === 'embedded_signup' ? t('sourceEmbedded') : t('sourceManual')}
+                  {row.is_on_biz_app ? ` · ${t('coexistence')}` : ''}
+                  {row.is_default ? ` · ${t('defaultBadge')}` : ''}
+                </p>
+              </button>
+              <div className="flex flex-wrap gap-2">
+                {!row.is_default && (
+                  <Button type="button" size="sm" variant="outline" onClick={() => void runNumberAction(row.id, 'default')}>{t('setDefault')}</Button>
+                )}
+                <Button type="button" size="sm" variant="outline" onClick={() => void runNumberAction(row.id, 'refresh')}>{t('refreshNumber')}</Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => void runNumberAction(row.id, 'subscribe')}>{t('subscribeNumber')}</Button>
+              </div>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => applyNumber(null)}>{t('addNumber')}</Button>
+            <Button type="button" onClick={() => void handleConnectWhatsapp()} disabled={connecting || !canEditSettings}>
+              {connecting ? t('connecting') : t('connectWhatsapp')}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
       {/* Main config form */}
       <div className="space-y-6">
@@ -689,6 +870,14 @@ export function WhatsAppConfig() {
                 {t('webhookVerifyTokenHint')}
                 {config && ' Leave blank to keep the saved verify token.'}
               </p>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-md border border-border p-3">
+              <div>
+                <Label>{t('coexistence')}</Label>
+                <p className="text-xs text-muted-foreground">{t('coexistenceHint')}</p>
+              </div>
+              <Switch checked={onBizApp} onCheckedChange={setOnBizApp} disabled={!canEditSettings} />
             </div>
 
             <div className="space-y-2">

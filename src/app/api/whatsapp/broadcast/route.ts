@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config'
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder'
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
 import {
@@ -120,13 +121,15 @@ export async function POST(request: Request) {
       )
     }
 
-    const { data: config, error: configError } = await supabase
-      .from('whatsapp_config')
-      .select('*')
-      .eq('account_id', accountId)
-      .single()
+    const requestedConfigId = typeof body?.whatsapp_config_id === 'string'
+      ? body.whatsapp_config_id
+      : null
+    const config = await resolveWhatsAppConfig(supabase, {
+      accountId,
+      configId: requestedConfigId,
+    }).catch(() => null)
 
-    if (configError || !config) {
+    if (!config) {
       return NextResponse.json(
         {
           error:

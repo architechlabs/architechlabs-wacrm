@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
+import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config';
 import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags';
 import { addContactTagAndDispatch } from '@/lib/contacts/tag-events';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
@@ -74,12 +75,8 @@ export async function resolveAuditUserId(
   db: SupabaseClient,
   accountId: string
 ): Promise<string> {
-  const { data: config } = await db
-    .from('whatsapp_config')
-    .select('user_id')
-    .eq('account_id', accountId)
-    .maybeSingle();
-  const configOwner = config?.user_id as string | undefined;
+  const config = await resolveWhatsAppConfig(db, { accountId }).catch(() => null);
+  const configOwner = config?.user_id;
   if (configOwner) return configOwner;
 
   const { data: account } = await db
@@ -111,7 +108,8 @@ export async function findOrCreateContact(
   db: SupabaseClient,
   accountId: string,
   auditUserId: string,
-  input: ContactInput
+  input: ContactInput,
+  whatsappConfigId?: string | null,
 ): Promise<{ id: string; created: boolean }> {
   const sanitized = sanitizePhoneForMeta(input.phone);
   if (!isValidE164(sanitized)) {
@@ -121,7 +119,10 @@ export async function findOrCreateContact(
     );
   }
 
-  const existing = await findExistingContact(db, accountId, sanitized);
+  const lineId = whatsappConfigId
+    ?? (await resolveWhatsAppConfig(db, { accountId }).catch(() => null))?.id
+    ?? null;
+  const existing = await findExistingContact(db, accountId, sanitized, lineId);
   if (existing) return { id: existing.id, created: false };
 
   const { data: created, error } = await db
@@ -133,6 +134,7 @@ export async function findOrCreateContact(
       name: input.name ?? sanitized,
       email: input.email ?? null,
       company: input.company ?? null,
+      whatsapp_config_id: lineId,
     })
     .select('id')
     .single();
@@ -141,7 +143,7 @@ export async function findOrCreateContact(
     // Lost a race against a concurrent create — the unique index
     // rejected the duplicate. Re-resolve to the winner.
     if (isUniqueViolation(error)) {
-      const raced = await findExistingContact(db, accountId, sanitized);
+      const raced = await findExistingContact(db, accountId, sanitized, lineId);
       if (raced) return { id: raced.id, created: false };
     }
     console.error('[api/v1/contacts] create error:', error);

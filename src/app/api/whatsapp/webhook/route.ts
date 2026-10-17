@@ -19,6 +19,14 @@ import {
   extractFailureDetails,
   type MetaStatusError,
 } from '@/lib/whatsapp/status-failure'
+import {
+  UNSUPPORTED_MESSAGE_LABEL,
+  dedupeIncomingMessages,
+  echoCustomerWaId,
+  historyDirection,
+  historyThreads,
+  stateSyncContacts,
+} from '@/lib/whatsapp/coexistence'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -115,6 +123,17 @@ export async function GET(request: Request) {
         { error: 'Missing verification parameters' },
         { status: 400 }
       )
+    }
+
+    // A tech-provider app has one verify token for every onboarded number.
+    if (
+      process.env.META_WEBHOOK_VERIFY_TOKEN &&
+      verifyToken === process.env.META_WEBHOOK_VERIFY_TOKEN
+    ) {
+      return new Response(challenge, {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      })
     }
 
     // Fetch all whatsapp configs to check verify tokens
@@ -231,6 +250,199 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
+async function loadConfigByPhoneNumberId(phoneNumberId: string) {
+  const { data: configRows, error: configError } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('*')
+    .eq('phone_number_id', phoneNumberId)
+
+  if (configError) {
+    console.error(
+      'Error fetching whatsapp_config for phone_number_id:',
+      phoneNumberId,
+      configError
+    )
+    return null
+  }
+
+  if (!configRows || configRows.length === 0) {
+    console.error('No config found for phone_number_id:', phoneNumberId)
+    return null
+  }
+
+  if (configRows.length > 1) {
+    console.error(
+      `Multiple configs (${configRows.length}) found for phone_number_id:`,
+      phoneNumberId,
+      '— event dropped. Resolve duplicates so each number maps to a single account.',
+    )
+    return null
+  }
+
+  return configRows[0]
+}
+
+async function existingMessageIds(conversationId: string, ids: string[]) {
+  if (ids.length === 0) return new Set<string>()
+  const { data } = await supabaseAdmin()
+    .from('messages')
+    .select('message_id')
+    .eq('conversation_id', conversationId)
+    .in('message_id', ids)
+  const known = new Set<string>()
+  for (const row of (data ?? []) as Array<{ message_id?: string | null }>) {
+    if (row.message_id) known.add(row.message_id)
+  }
+  return known
+}
+
+async function handleCoexistenceChange(
+  field: string,
+  value: Record<string, unknown>,
+  config: {
+    id: string
+    account_id: string
+    user_id: string
+    access_token: string
+    mirror_inbound_media?: boolean
+  },
+) {
+  const accessToken = decrypt(config.access_token)
+  if (field === 'smb_app_state_sync') {
+    for (const contact of stateSyncContacts(value as never)) {
+      if (contact.action === 'remove') continue
+      await findOrCreateContact(
+        config.account_id,
+        config.user_id,
+        contact.phone,
+        contact.name,
+        config.id,
+      )
+    }
+    return
+  }
+
+  if (field === 'smb_message_echoes') {
+    const echoes = dedupeIncomingMessages(
+      ((value.message_echoes as Array<{ id?: string; to?: string; timestamp?: string; type?: string; text?: { body?: string } }>) ?? []),
+      [],
+    )
+    for (const echo of echoes) {
+      const customer = echoCustomerWaId(echo)
+      if (!customer || !echo.id) continue
+      await storeLineMessage({
+        config,
+        accessToken,
+        customerPhone: customer,
+        customerName: customer,
+        messageId: echo.id,
+        timestamp: echo.timestamp,
+        type: echo.type || 'text',
+        text: echo.text?.body ?? null,
+        direction: 'outbound',
+      })
+    }
+    return
+  }
+
+  if (field === 'history') {
+    for (const thread of historyThreads(value as never)) {
+      const fresh = dedupeIncomingMessages(thread.messages, [])
+      for (const message of fresh) {
+        await storeLineMessage({
+          config,
+          accessToken,
+          customerPhone: thread.id,
+          customerName: thread.id,
+          messageId: message.id,
+          timestamp: message.timestamp,
+          type: message.type || 'text',
+          text: message.text?.body ?? null,
+          direction: historyDirection(message.from, thread.id),
+        })
+      }
+    }
+  }
+}
+
+async function storeLineMessage(args: {
+  config: { id: string; account_id: string; user_id: string; mirror_inbound_media?: boolean }
+  accessToken: string
+  customerPhone: string
+  customerName: string
+  messageId: string
+  timestamp?: string
+  type: string
+  text: string | null
+  direction: 'inbound' | 'outbound'
+}) {
+  const contactOutcome = await findOrCreateContact(
+    args.config.account_id,
+    args.config.user_id,
+    args.customerPhone,
+    args.customerName,
+    args.config.id,
+  )
+  if (!contactOutcome) return
+  const convResult = await findOrCreateConversation(
+    args.config.account_id,
+    args.config.user_id,
+    contactOutcome.contact.id,
+    args.config.id,
+  )
+  if (!convResult) return
+
+  const known = await existingMessageIds(convResult.conversation.id, [args.messageId])
+  const [fresh] = dedupeIncomingMessages([{ id: args.messageId }], known)
+  if (!fresh) return
+
+  const allowed = new Set([
+    'text', 'image', 'document', 'audio', 'video',
+    'location', 'template', 'interactive', 'unsupported',
+  ])
+  const contentType = args.type === 'sticker'
+    ? 'image'
+    : args.type === 'button'
+      ? 'interactive'
+      : allowed.has(args.type)
+        ? args.type
+        : 'unsupported'
+  const contentText = contentType === 'unsupported'
+    ? UNSUPPORTED_MESSAGE_LABEL
+    : args.text
+  const createdAt = args.timestamp
+    ? new Date(parseInt(args.timestamp, 10) * 1000).toISOString()
+    : new Date().toISOString()
+
+  const { error } = await supabaseAdmin()
+    .from('messages')
+    .upsert(
+      {
+        conversation_id: convResult.conversation.id,
+        sender_type: args.direction === 'inbound' ? 'customer' : 'agent',
+        content_type: contentType,
+        content_text: contentText,
+        message_id: args.messageId,
+        status: 'delivered',
+        created_at: createdAt,
+      },
+      { onConflict: 'conversation_id,message_id', ignoreDuplicates: true },
+    )
+  if (error) {
+    console.error('[webhook] coexistence message insert failed:', error.message)
+    return
+  }
+
+  await supabaseAdmin()
+    .from('conversations')
+    .update({
+      last_message_text: contentText || `[${args.type}]`,
+      last_message_at: createdAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', convResult.conversation.id)
+}
+
 async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
   if (!body.entry) return
 
@@ -250,6 +462,18 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       const value = change.value
+      const coexistenceField =
+        change.field === 'smb_message_echoes' ||
+        change.field === 'smb_app_state_sync' ||
+        change.field === 'history'
+      if (coexistenceField) {
+        const phoneNumberId = value?.metadata?.phone_number_id
+        if (!phoneNumberId) continue
+        const config = await loadConfigByPhoneNumberId(phoneNumberId)
+        if (!config) continue
+        await handleCoexistenceChange(change.field, value as unknown as Record<string, unknown>, config)
+        continue
+      }
 
       // Handle status updates
       if (value.statuses) {
@@ -262,43 +486,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       if (!value.messages || !value.contacts) continue
 
       const phoneNumberId = value.metadata.phone_number_id
-
-      // Find user's config by phone_number_id. `.single()` returns
-      // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
-      // operators see the real cause in logs. ≥2 rows shouldn't happen
-      // post-migration 013 (UNIQUE constraint), but a row created
-      // before the constraint, or a race, would still surface here.
-      const { data: configRows, error: configError } = await supabaseAdmin()
-        .from('whatsapp_config')
-        .select('*')
-        .eq('phone_number_id', phoneNumberId)
-
-      if (configError) {
-        console.error(
-          'Error fetching whatsapp_config for phone_number_id:',
-          phoneNumberId,
-          configError
-        )
-        continue
-      }
-
-      if (!configRows || configRows.length === 0) {
-        console.error('No config found for phone_number_id:', phoneNumberId)
-        continue
-      }
-
-      if (configRows.length > 1) {
-        console.error(
-          `Multiple configs (${configRows.length}) found for phone_number_id:`,
-          phoneNumberId,
-          '— inbound message dropped. Resolve duplicates so each number maps to a single account.',
-          'Account owners:',
-          configRows.map((r: { account_id: string; user_id: string }) => `${r.account_id} (admin ${r.user_id})`)
-        )
-        continue
-      }
-
-      const config = configRows[0]
+      const config = await loadConfigByPhoneNumberId(phoneNumberId)
+      if (!config) continue
 
       const decryptedAccessToken = decrypt(config.access_token)
 
@@ -320,7 +509,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // Default ON: the column is NOT NULL DEFAULT TRUE, but a row
           // read before migration 039 lands would have it undefined,
           // and losing attachments is the failure mode worth avoiding.
-          config.mirror_inbound_media !== false
+          config.mirror_inbound_media !== false,
+          config.id,
         )
       }
     }
@@ -601,7 +791,8 @@ async function processMessage(
   accessToken: string,
   // Per-account opt-out for the inbound-media mirror (migration 039).
   // See parseMessageContent for what it turns off.
-  mirrorMedia: boolean
+  mirrorMedia: boolean,
+  whatsappConfigId: string,
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
@@ -611,7 +802,8 @@ async function processMessage(
     accountId,
     configOwnerUserId,
     senderPhone,
-    contactName
+    contactName,
+    whatsappConfigId,
   )
   if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
@@ -620,7 +812,8 @@ async function processMessage(
   const convResult = await findOrCreateConversation(
     accountId,
     configOwnerUserId,
-    contactRecord.id
+    contactRecord.id,
+    whatsappConfigId,
   )
   if (!convResult) return
   const conversation = convResult.conversation
@@ -681,15 +874,15 @@ async function processMessage(
   // allowed value so the INSERT doesn't fail with a constraint error.
   const ALLOWED_CONTENT_TYPES = new Set([
     'text', 'image', 'document', 'audio', 'video',
-    'location', 'template', 'interactive',
+    'location', 'template', 'interactive', 'unsupported', 'sticker',
   ])
-  const contentType = ALLOWED_CONTENT_TYPES.has(message.type)
-    ? message.type
-    : message.type === 'sticker'
-      ? 'image'         // stickers are images
-      : message.type === 'button'
-        ? 'interactive' // template quick-reply tap (issue #478)
-        : 'text'        // reaction, unknown → text fallback
+  const contentType = message.type === 'sticker'
+    ? 'image'
+    : message.type === 'button'
+      ? 'interactive'
+      : ALLOWED_CONTENT_TYPES.has(message.type)
+        ? message.type
+        : 'unsupported'
 
   // Determine whether this is the contact's very first inbound message
   // BEFORE we insert, so the count is accurate. Covers the case where
@@ -1109,10 +1302,13 @@ async function parseMessageContent(
       }
     }
 
+    case 'unsupported':
+      return { ...empty, contentText: UNSUPPORTED_MESSAGE_LABEL }
+
     default:
       return {
         ...empty,
-        contentText: `[Unsupported message type: ${message.type}]`,
+        contentText: UNSUPPORTED_MESSAGE_LABEL,
       }
   }
 }
@@ -1131,7 +1327,8 @@ async function findOrCreateContact(
   accountId: string,
   configOwnerUserId: string,
   phone: string,
-  name: string
+  name: string,
+  whatsappConfigId?: string,
 ): Promise<ContactOutcome | null> {
   // Find an existing contact for this account by phone. The shared
   // helper pre-filters in SQL by the last-8-digit suffix (so we don't
@@ -1143,6 +1340,7 @@ async function findOrCreateContact(
     supabaseAdmin(),
     accountId,
     phone,
+    whatsappConfigId,
   )
 
   if (existingContact) {
@@ -1167,6 +1365,7 @@ async function findOrCreateContact(
       user_id: configOwnerUserId,
       phone,
       name: name || phone,
+      whatsapp_config_id: whatsappConfigId ?? null,
     })
     .select()
     .single()
@@ -1177,7 +1376,7 @@ async function findOrCreateContact(
     // unique index (migration 022) rejected the duplicate. Re-resolve
     // the existing row instead of dropping the message.
     if (isUniqueViolation(createError)) {
-      const raced = await findExistingContact(supabaseAdmin(), accountId, phone)
+      const raced = await findExistingContact(supabaseAdmin(), accountId, phone, whatsappConfigId)
       if (raced) return { contact: raced, wasCreated: false }
     }
     console.error('Error creating contact:', createError)
@@ -1191,6 +1390,7 @@ async function findOrCreateConversation(
   accountId: string,
   configOwnerUserId: string,
   contactId: string,
+  whatsappConfigId?: string,
 ) {
   // Look for an existing conversation in this account, oldest-first.
   //
@@ -1205,11 +1405,15 @@ async function findOrCreateConversation(
   // Ordering oldest-first and taking one row makes the lookup resolve to
   // the same canonical survivor the dedup migration (036) keeps, so any
   // pre-existing duplicates converge instead of compounding.
-  const { data: existingRows, error: findError } = await supabaseAdmin()
+  let conversationLookup = supabaseAdmin()
     .from('conversations')
     .select('*')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+  if (whatsappConfigId) {
+    conversationLookup = conversationLookup.eq('whatsapp_config_id', whatsappConfigId)
+  }
+  const { data: existingRows, error: findError } = await conversationLookup
     .order('created_at', { ascending: true })
     .limit(1)
 
@@ -1230,6 +1434,7 @@ async function findOrCreateConversation(
       account_id: accountId,
       user_id: configOwnerUserId,
       contact_id: contactId,
+      whatsapp_config_id: whatsappConfigId ?? null,
     })
     .select()
     .single()
@@ -1240,11 +1445,13 @@ async function findOrCreateConversation(
     // (migration 036) rejected the duplicate. Re-resolve the winning
     // row instead of dropping the message — mirrors findOrCreateContact.
     if (isUniqueViolation(createError)) {
-      const { data: raced } = await supabaseAdmin()
+      let racedLookup = supabaseAdmin()
         .from('conversations')
         .select('*')
         .eq('account_id', accountId)
         .eq('contact_id', contactId)
+      if (whatsappConfigId) racedLookup = racedLookup.eq('whatsapp_config_id', whatsappConfigId)
+      const { data: raced } = await racedLookup
         .order('created_at', { ascending: true })
         .limit(1)
       if (raced && raced.length > 0) {

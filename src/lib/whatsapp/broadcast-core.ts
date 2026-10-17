@@ -20,6 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import { resolveWhatsAppConfig, WhatsAppConfigLookupError } from '@/lib/whatsapp/resolve-config';
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -54,6 +55,8 @@ export interface CreateBroadcastParams {
   templateName: string;
   templateLanguage?: string | null;
   recipients: BroadcastRecipientInput[];
+  /** Line this broadcast sends from. Omitted uses the workspace default. */
+  whatsappConfigId?: string | null;
 }
 
 interface PlannedRecipient {
@@ -110,12 +113,23 @@ export async function createBroadcast(
 
   // Config (fail fast + provides the audit trail owner already resolved
   // by the caller). Meta send needs phone_number_id + decrypted token.
-  const { data: config, error: configError } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', accountId)
-    .single();
-  if (configError || !config) {
+  let config
+  try {
+    config = await resolveWhatsAppConfig(db, {
+      accountId,
+      configId: params.whatsappConfigId,
+    })
+  } catch (err) {
+    if (err instanceof WhatsAppConfigLookupError) {
+      throw new BroadcastError(
+        'whatsapp_not_configured',
+        'WhatsApp not configured. Please set up your WhatsApp integration first.',
+        400
+      )
+    }
+    throw err
+  }
+  if (!config) {
     throw new BroadcastError(
       'whatsapp_not_configured',
       'WhatsApp not configured. Please set up your WhatsApp integration first.',
@@ -153,7 +167,7 @@ export async function createBroadcast(
     }
     const { id } = await findOrCreateContact(db, accountId, auditUserId, {
       phone: sanitized,
-    });
+    }, config.id);
     resolved.push({
       contactId: id,
       phone: sanitized,
@@ -211,6 +225,7 @@ export async function createBroadcast(
       // Frozen per-recipient params (migration 038) — without them a
       // resume of this broadcast has no way to reconstruct {{1}}.
       p_template_params: deduped.map((r) => r.params),
+      p_whatsapp_config_id: config.id ?? null,
     }
   );
   if (createErr || !createdRows || createdRows.length === 0) {

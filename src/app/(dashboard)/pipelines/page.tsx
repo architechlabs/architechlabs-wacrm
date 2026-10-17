@@ -28,6 +28,7 @@ import { GitBranch, Plus, ChevronDown, Settings } from "lucide-react";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { useAuth } from "@/hooks/use-auth";
+import { useWhatsAppNumber } from "@/hooks/use-whatsapp-number";
 import { GatedButton } from "@/components/ui/gated-button";
 import { useTranslations } from "next-intl";
 
@@ -51,6 +52,7 @@ export default function PipelinesPage() {
   const canEditSettings = useCan("edit-settings");
   const canCreateDeals = useCan("send-messages");
   const { accountId } = useAuth();
+  const { selectedId: whatsappConfigId, ready: lineReady } = useWhatsAppNumber();
 
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string>("");
@@ -99,14 +101,17 @@ export default function PipelinesPage() {
 
   const loadDeals = useCallback(
     async (pipelineId: string) => {
+      if (!lineReady || !whatsappConfigId) return [];
       const { data } = await supabase
         .from("deals")
         .select("*, contact:contacts(*), assignee:profiles!deals_assigned_to_fkey(*)")
         .eq("pipeline_id", pipelineId)
         .order("created_at", { ascending: false });
-      return (data ?? []) as Deal[];
+      return ((data ?? []) as Deal[]).filter(
+        (deal) => deal.contact?.whatsapp_config_id === whatsappConfigId,
+      );
     },
-    [supabase],
+    [supabase, lineReady, whatsappConfigId],
   );
 
   const seedDefaultPipeline = useCallback(async (): Promise<Pipeline | null> => {

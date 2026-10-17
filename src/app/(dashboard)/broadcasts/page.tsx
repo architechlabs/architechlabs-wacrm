@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/table';
 import { Radio, Plus, Loader2 } from 'lucide-react';
 import { useCan } from '@/hooks/use-can';
+import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { GatedButton } from '@/components/ui/gated-button';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
@@ -62,6 +63,7 @@ export default function BroadcastsPage() {
   const t = useTranslations('Broadcasts.page');
   const tStatus = useTranslations('Broadcasts.status');
   const canCreate = useCan('send-messages');
+  const { selectedId: whatsappConfigId, ready: lineReady } = useWhatsAppNumber();
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -72,9 +74,15 @@ export default function BroadcastsPage() {
   async function fetchBroadcasts() {
     try {
       const supabase = createClient();
+      if (!lineReady || !whatsappConfigId) {
+        setBroadcasts([]);
+        setLoading(false);
+        return;
+      }
       const { data, error: fetchError } = await supabase
         .from('broadcasts')
         .select('*')
+        .eq('whatsapp_config_id', whatsappConfigId)
         .order('created_at', { ascending: false });
 
       if (fetchError) throw fetchError;

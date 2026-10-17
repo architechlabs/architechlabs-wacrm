@@ -142,7 +142,9 @@ function planDb(fx: PlanFixture, writes: PlanWrites = {}): SupabaseClient {
           return b;
         },
         maybeSingle: async () => ({
-          data: fx.broadcast === undefined ? null : fx.broadcast,
+          data: table === 'whatsapp_config'
+            ? (fx.config === undefined ? null : fx.config)
+            : (fx.broadcast === undefined ? null : fx.broadcast),
           error: null,
         }),
         single: async () => ({

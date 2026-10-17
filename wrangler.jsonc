@@ -1,6 +1,8 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "architech-wacrm",
+  // Architech Labs WACRM only — do not deploy with a token from another account.
+  "account_id": "f8fcf42a91f7fbf1cb89022ead312069",
   "main": ".open-next/worker.js",
   "workers_dev": true,
   "routes": [

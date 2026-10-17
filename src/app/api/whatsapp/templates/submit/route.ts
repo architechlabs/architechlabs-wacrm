@@ -7,6 +7,7 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config'
 import { submitMessageTemplate } from '@/lib/whatsapp/meta-api'
 import {
   validateTemplatePayload,
@@ -29,6 +30,7 @@ function buildUpsertRow(
     status: 'DRAFT' | string
     metaTemplateId: string | null
     submissionError: string | null
+    wabaId?: string | null
   },
 ) {
   return {
@@ -53,6 +55,7 @@ function buildUpsertRow(
     sample_values: payload.sample_values ?? null,
     status: extras.status,
     meta_template_id: extras.metaTemplateId,
+    waba_id: extras.wabaId ?? null,
     submission_error: extras.submissionError,
     // Clear stale rejection_reason whenever we re-submit; the
     // webhook will set it again if Meta still rejects.
@@ -102,8 +105,11 @@ export async function POST(request: Request) {
     const { supabase, accountId, userId } = await requireRole('admin')
 
     let payload: TemplatePayload
+    let configId: string | null = null
     try {
-      payload = (await request.json()) as TemplatePayload
+      const raw = await request.json()
+      if (typeof raw?.whatsapp_config_id === 'string') configId = raw.whatsapp_config_id
+      payload = raw as TemplatePayload
     } catch {
       return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 })
     }
@@ -133,17 +139,13 @@ export async function POST(request: Request) {
 
     let metaTemplateId: string
     let metaStatus: string
+    const config = await resolveWhatsAppConfig(supabase, { accountId, configId }).catch(() => null)
 
     if (dryRun) {
       metaTemplateId = `dry-run-${crypto.randomUUID()}`
       metaStatus = 'PENDING'
     } else {
-      const { data: config, error: configError } = await supabase
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', accountId)
-        .single()
-      if (configError || !config) {
+      if (!config) {
         return NextResponse.json(
           {
             error:
@@ -196,6 +198,7 @@ export async function POST(request: Request) {
             status: 'DRAFT',
             metaTemplateId: null,
             submissionError: message,
+            wabaId: config?.waba_id ?? null,
           }),
         )
         const isRateLimit = /\b429\b/.test(message)
@@ -216,6 +219,7 @@ export async function POST(request: Request) {
         status: normalizeStatus(metaStatus),
         metaTemplateId,
         submissionError: null,
+        wabaId: config?.waba_id ?? null,
       }),
     )
 

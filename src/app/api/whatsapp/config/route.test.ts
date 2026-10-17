@@ -69,7 +69,8 @@ describe('shared WhatsApp configuration', () => {
       }
     }
     expect(state.writes).toEqual([]);
-    expect(state.configFilters.every(([column, value]) => column === 'account_id' && value === 'shared-account')).toBe(true);
+    expect(state.configFilters.some(([column, value]) => column === 'account_id' && value === 'shared-account')).toBe(true);
+    expect(state.configFilters.some(([column]) => column === 'is_default')).toBe(true);
     expect(state.verify).toHaveBeenCalledWith({ phoneNumberId: 'test-phone', accessToken: 'test-access' });
   });
   it('lets an admin save using both stored secrets unchanged', async () => {

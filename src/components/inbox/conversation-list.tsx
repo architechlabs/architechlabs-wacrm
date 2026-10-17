@@ -37,6 +37,9 @@ interface ConversationListProps {
    */
   resyncToken?: number;
   onNewMessage?: () => void;
+  /** Selected WhatsApp line. Undefined while the line list is loading. */
+  whatsappConfigId?: string | null;
+  lineReady?: boolean;
 }
 
 const STATUS_COLORS: Record<ConversationStatus, string> = {
@@ -57,6 +60,8 @@ export function ConversationList({
   onConversationsLoaded,
   resyncToken = 0,
   onNewMessage,
+  whatsappConfigId = null,
+  lineReady = true,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
   
@@ -104,10 +109,17 @@ export function ConversationList({
 
     (async () => {
       setLoadError(false);
+      if (!lineReady) return;
+      if (!whatsappConfigId) {
+        onConversationsLoadedRef.current([]);
+        setLoading(false);
+        return;
+      }
       try {
         const { data, error } = await readWithTimeout(signal => supabase
           .from("conversations")
           .select(CONVERSATION_SELECT)
+          .eq("whatsapp_config_id", whatsappConfigId)
           .order("last_message_at", { ascending: false })
           .abortSignal(signal), controller.signal);
 
@@ -132,7 +144,7 @@ export function ConversationList({
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus — catches
     // up on any events sent while the WS was disconnected or throttled.
-  }, [resyncToken, retryRead]);
+  }, [resyncToken, retryRead, whatsappConfigId, lineReady]);
 
   // Tag definitions for the filter picker — loaded once so labels/colours
   // stay stable regardless of which conversations happen to be loaded.

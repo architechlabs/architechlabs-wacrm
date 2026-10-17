@@ -6,6 +6,8 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { graphApiBase } from '@/lib/whatsapp/meta-api'
+import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 import type { TemplateButton, TemplateSampleValues } from '@/types'
 
@@ -21,9 +23,6 @@ import type { TemplateButton, TemplateSampleValues } from '@/types'
  * Locally-created templates (no Meta counterpart) are NOT deleted —
  * they remain visible so the user can notice drift and clean up.
  */
-
-const META_API_VERSION = 'v21.0'
-const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
 
 interface MetaButton {
   type: string
@@ -127,7 +126,7 @@ function extractSampleValues(
   return sv
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     // Syncing rewrites the account-wide template catalog, which is
     // settings-class data: `canEditSettings` and the message_templates
@@ -135,13 +134,20 @@ export async function POST() {
     // Resolving account_id off the profile only proved membership.
     const { supabase, accountId, userId } = await requireRole('admin')
 
-    const { data: config, error: configError } = await supabase
-      .from('whatsapp_config')
-      .select('*')
-      .eq('account_id', accountId)
-      .single()
+    let configId: string | null = null
+    try {
+      const body = await request.json()
+      if (typeof body?.whatsapp_config_id === 'string') configId = body.whatsapp_config_id
+    } catch {
+      configId = null
+    }
 
-    if (configError || !config) {
+    const config = await resolveWhatsAppConfig(supabase, {
+      accountId,
+      configId,
+    }).catch(() => null)
+
+    if (!config) {
       return NextResponse.json(
         {
           error:
@@ -166,7 +172,7 @@ export async function POST() {
     const metaTemplates: MetaTemplate[] = []
     let nextUrl:
       | string
-      | null = `${META_API_BASE}/${config.waba_id}/message_templates?limit=100&fields=id,name,language,status,category,components,quality_score`
+      | null = `${graphApiBase()}/${config.waba_id}/message_templates?limit=100&fields=id,name,language,status,category,components,quality_score`
     const PAGE_CAP = 20
     let pageCount = 0
 
@@ -236,6 +242,7 @@ export async function POST() {
         status: normalizeStatus(t.status),
         meta_template_id: t.id,
         quality_score: normalizeQualityScore(t.quality_score),
+        waba_id: config.waba_id,
         updated_at: new Date().toISOString(),
       }
 

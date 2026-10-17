@@ -265,6 +265,13 @@ function MessageContent({
       );
     }
 
+    case "unsupported":
+      return (
+        <p className="whitespace-pre-wrap break-words text-sm italic">
+          {t("unsupported")}
+        </p>
+      );
+
     default:
       return (
         <p className="whitespace-pre-wrap break-words text-sm">

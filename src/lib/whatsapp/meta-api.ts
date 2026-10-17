@@ -9,8 +9,12 @@
  * instead of a runtime rejection from Meta.
  */
 
-const META_API_VERSION = 'v21.0'
-const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
+/** Graph version is env-driven so a tech-provider app can use a current API. */
+export function graphApiBase(): string {
+  const raw = process.env.META_GRAPH_API_VERSION?.trim() || 'v21.0'
+  const version = /^v\d+\.\d+$/.test(raw) ? raw : 'v21.0'
+  return `https://graph.facebook.com/${version}`
+}
 
 export interface MetaSendResult {
   messageId: string
@@ -55,7 +59,7 @@ export async function verifyPhoneNumber(
   args: VerifyPhoneNumberArgs
 ): Promise<MetaPhoneInfo> {
   const { phoneNumberId, accessToken } = args
-  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
+  const url = `${graphApiBase()}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
@@ -124,7 +128,7 @@ export async function registerPhoneNumber(
   args: RegisterPhoneNumberArgs
 ): Promise<RegisterPhoneNumberResult> {
   const { phoneNumberId, accessToken, pin } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/register`
+  const url = `${graphApiBase()}/${phoneNumberId}/register`
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -168,7 +172,7 @@ export async function subscribeWabaToApp(
   args: SubscribeWabaToAppArgs
 ): Promise<void> {
   const { wabaId, accessToken } = args
-  const url = `${META_API_BASE}/${wabaId}/subscribed_apps`
+  const url = `${graphApiBase()}/${wabaId}/subscribed_apps`
   const response = await fetch(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -200,7 +204,7 @@ export async function getSubscribedApps(
   args: GetSubscribedAppsArgs
 ): Promise<SubscribedApp[]> {
   const { wabaId, accessToken } = args
-  const url = `${META_API_BASE}/${wabaId}/subscribed_apps`
+  const url = `${graphApiBase()}/${wabaId}/subscribed_apps`
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
@@ -233,7 +237,7 @@ export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, text, contextMessageId } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${graphApiBase()}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
@@ -292,7 +296,7 @@ export async function sendMediaMessage(
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${graphApiBase()}/${phoneNumberId}/messages`
 
   // Audio accepts neither caption nor filename per Meta's spec — adding
   // either yields a 400. image/video/document accept a caption; only
@@ -387,7 +391,7 @@ export async function sendTemplateMessage(
     messageParams,
     contextMessageId,
   } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${graphApiBase()}/${phoneNumberId}/messages`
 
   const templatePayload: Record<string, unknown> = {
     name: templateName,
@@ -487,7 +491,7 @@ export async function uploadResumableMedia(
     access_token: accessToken,
   })
   const startRes = await fetch(
-    `${META_API_BASE}/${appId}/uploads?${startParams.toString()}`,
+    `${graphApiBase()}/${appId}/uploads?${startParams.toString()}`,
     { method: 'POST' },
   )
   if (!startRes.ok) {
@@ -500,7 +504,7 @@ export async function uploadResumableMedia(
 
   // Step 2 — upload the bytes. Note the `OAuth` auth scheme (not Bearer)
   // and the file_offset header, both required by this endpoint.
-  const uploadRes = await fetch(`${META_API_BASE}/${startData.id}`, {
+  const uploadRes = await fetch(`${graphApiBase()}/${startData.id}`, {
     method: 'POST',
     headers: {
       Authorization: `OAuth ${accessToken}`,
@@ -555,7 +559,7 @@ export async function submitMessageTemplate(
   args: SubmitMessageTemplateArgs
 ): Promise<SubmitMessageTemplateResult> {
   const { wabaId, accessToken, payload } = args
-  const url = `${META_API_BASE}/${wabaId}/message_templates`
+  const url = `${graphApiBase()}/${wabaId}/message_templates`
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -608,7 +612,7 @@ export async function editMessageTemplate(
   const { metaTemplateId, accessToken, components, category } = args
   const body: Record<string, unknown> = { components }
   if (category) body.category = category
-  const response = await fetch(`${META_API_BASE}/${metaTemplateId}`, {
+  const response = await fetch(`${graphApiBase()}/${metaTemplateId}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -646,7 +650,7 @@ export async function deleteMessageTemplate(
   const { wabaId, accessToken, name, metaTemplateId } = args
   const params = new URLSearchParams({ name })
   if (metaTemplateId) params.set('hsm_id', metaTemplateId)
-  const url = `${META_API_BASE}/${wabaId}/message_templates?${params.toString()}`
+  const url = `${graphApiBase()}/${wabaId}/message_templates?${params.toString()}`
   const response = await fetch(url, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -681,7 +685,7 @@ export async function sendReactionMessage(
   args: SendReactionMessageArgs
 ): Promise<MetaSendResult> {
   const { phoneNumberId, accessToken, to, targetMessageId, emoji } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${graphApiBase()}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -817,7 +821,7 @@ export async function sendInteractiveButtons(
   }
   if (contextMessageId) body.context = { message_id: contextMessageId }
 
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${graphApiBase()}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -949,7 +953,7 @@ export async function sendInteractiveList(
   }
   if (contextMessageId) body.context = { message_id: contextMessageId }
 
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${graphApiBase()}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -1013,7 +1017,7 @@ export async function getMediaUrl(
   args: GetMediaUrlArgs
 ): Promise<{ url: string; mimeType: string; fileSize: number | null }> {
   const { mediaId, accessToken } = args
-  const response = await fetch(`${META_API_BASE}/${mediaId}`, {
+  const response = await fetch(`${graphApiBase()}/${mediaId}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (!response.ok) {
@@ -1054,4 +1058,92 @@ export async function downloadMedia(
     response.headers.get('content-type') || 'application/octet-stream'
   const buffer = Buffer.from(await response.arrayBuffer())
   return { buffer, contentType }
+}
+
+export interface WabaPhoneNumber {
+  id: string
+  display_phone_number?: string
+  verified_name?: string
+  is_on_biz_app?: boolean
+}
+
+/**
+ * Exchange an Embedded Signup authorization code for a business token.
+ * The token is returned to the caller and must be encrypted before storage.
+ */
+export async function exchangeEmbeddedSignupCode(code: string): Promise<string> {
+  const appId = process.env.META_APP_ID?.trim()
+  const secret = process.env.META_APP_SECRET?.trim()
+  if (!appId || !secret) {
+    throw new Error('META_APP_ID and META_APP_SECRET are required for Embedded Signup')
+  }
+  const url = new URL(`${graphApiBase()}/oauth/access_token`)
+  url.searchParams.set('client_id', appId)
+  url.searchParams.set('client_secret', secret)
+  url.searchParams.set('code', code)
+  const response = await fetch(url)
+  if (!response.ok) {
+    await throwMetaError(response, `Code exchange failed: ${response.status}`)
+  }
+  const data = (await response.json()) as { access_token?: string }
+  if (!data.access_token) throw new Error('Meta did not return an access token')
+  return data.access_token
+}
+
+async function fetchWabaPhones(
+  wabaId: string,
+  accessToken: string,
+  fields: string,
+): Promise<WabaPhoneNumber[]> {
+  const url = `${graphApiBase()}/${wabaId}/phone_numbers?fields=${fields}`
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = (await response.json()) as { data?: WabaPhoneNumber[] }
+  return data.data ?? []
+}
+
+/** Phone numbers on a WABA. Retries without coexistence fields on older Graph versions. */
+export async function listWabaPhoneNumbers(args: {
+  wabaId: string
+  accessToken: string
+}): Promise<WabaPhoneNumber[]> {
+  const { wabaId, accessToken } = args
+  try {
+    return await fetchWabaPhones(
+      wabaId,
+      accessToken,
+      'id,display_phone_number,verified_name,is_on_biz_app',
+    )
+  } catch {
+    return fetchWabaPhones(
+      wabaId,
+      accessToken,
+      'id,display_phone_number,verified_name',
+    )
+  }
+}
+
+/** Ask Meta to sync WhatsApp Business app contacts, then message history. */
+export async function requestSmbAppData(args: {
+  phoneNumberId: string
+  accessToken: string
+  syncType: 'smb_app_state_sync' | 'history'
+}): Promise<void> {
+  const { phoneNumberId, accessToken, syncType } = args
+  const url = `${graphApiBase()}/${phoneNumberId}/smb_app_data`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
 }

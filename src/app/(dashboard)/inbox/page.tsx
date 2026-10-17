@@ -20,10 +20,20 @@ import { cn } from "@/lib/utils";
 import { useCan } from "@/hooks/use-can";
 import { useAuth } from "@/hooks/use-auth";
 import { readWhatsappConnectionStatus } from "@/lib/inbox/whatsapp-connection";
+import { useWhatsAppNumber } from "@/hooks/use-whatsapp-number";
 
 // Remembers the agent's show/hide choice for the desktop contact panel
 // across reloads and sessions (device-scoped, like the theme prefs).
 const CONTACT_PANEL_STORAGE_KEY = "wacrm:inbox:contact-panel-open";
+
+function replaceInboxQuery(updates: Record<string, string | null>) {
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(updates)) {
+    if (!value) url.searchParams.delete(key);
+    else url.searchParams.set(key, value);
+  }
+  window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+}
 
 // `useSearchParams` (the `?c=<id>` deep link below) requires a Suspense
 // boundary or the production build bails to CSR and errors out. Thin
@@ -40,6 +50,7 @@ function InboxPageInner() {
   const t = useTranslations("Inbox.page");
   const canSendMessages = useCan("send-messages");
   const { user, accountId, profileLoading } = useAuth();
+  const { selectedId: whatsappConfigId, ready: lineReady } = useWhatsAppNumber();
   const userId = user?.id;
   const [connectionCheckFailed, setConnectionCheckFailed] = useState(false);
   const [connectionRetry, setConnectionRetry] = useState(0);
@@ -160,6 +171,13 @@ function InboxPageInner() {
       }
       if (!data) return;
       const fetched = normalizeConversation(data);
+      if (
+        whatsappConfigId &&
+        fetched.whatsapp_config_id &&
+        fetched.whatsapp_config_id !== whatsappConfigId
+      ) {
+        return;
+      }
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === fetched.id);
         if (existing) {
@@ -179,7 +197,7 @@ function InboxPageInner() {
     } finally {
       hydratingConvIdsRef.current.delete(convId);
     }
-  }, []);
+  }, [whatsappConfigId]);
 
   // Check WhatsApp connection status on mount
   useEffect(() => {
@@ -206,6 +224,7 @@ function InboxPageInner() {
         supabase,
         accountId,
         controller.signal,
+        whatsappConfigId,
       );
       if (!cancelled) setWhatsappConnected(connected);
       } catch {
@@ -221,7 +240,7 @@ function InboxPageInner() {
       cancelled = true;
       controller.abort();
     };
-  }, [accountId, profileLoading, userId, connectionRetry]);
+  }, [accountId, profileLoading, userId, connectionRetry, whatsappConfigId]);
 
   // Handle realtime message events
   const handleMessageEvent = useCallback(
@@ -296,6 +315,13 @@ function InboxPageInner() {
       const conv = event.new;
 
       if (event.eventType === "INSERT") {
+        if (
+          whatsappConfigId &&
+          conv.whatsapp_config_id &&
+          conv.whatsapp_config_id !== whatsappConfigId
+        ) {
+          return;
+        }
         // Prepend immediately for snappy UX so the new conv shows in the
         // list right away, then hydrate to fill in the `contact` join
         // (realtime payloads never include joins). Skip both if we
@@ -345,7 +371,7 @@ function InboxPageInner() {
         }
       }
     },
-    [activeConversation, hydrateConversation]
+    [activeConversation, hydrateConversation, whatsappConfigId]
   );
 
   // Subscribe to realtime. The `isConnected` flag below feeds the
@@ -494,9 +520,9 @@ function InboxPageInner() {
       // Reflect the selection in the URL so a refresh lands the user
       // back in the same thread, and so copy-paste links work. Use
       // replaceState avoids a Worker/RSC request for client-only selection.
-      window.history.replaceState(null, '', `/inbox?c=${encodeURIComponent(conv.id)}`);
+      replaceInboxQuery({ c: conv.id, n: whatsappConfigId });
     },
-    [activeConversation?.id]
+    [activeConversation?.id, whatsappConfigId]
   );
 
   // Mobile "back" — deselect the conversation so the list pane comes
@@ -509,7 +535,7 @@ function InboxPageInner() {
     // Clearing the ref lets the deep-link auto-selector fire again if
     // the user later visits /inbox?c=<same-id> — desirable UX.
     autoSelectedForDeepLinkRef.current = null;
-    window.history.replaceState(null, '', '/inbox');
+    replaceInboxQuery({ c: null });
   }, []);
 
   const handleConversationReady = useCallback(
@@ -536,11 +562,11 @@ function InboxPageInner() {
       setActiveContact(conversation.contact ?? null);
       setMessages([]);
       autoSelectedForDeepLinkRef.current = conversation.id;
-      window.history.replaceState(null, '', `/inbox?c=${encodeURIComponent(conversation.id)}`);
+      replaceInboxQuery({ c: conversation.id, n: whatsappConfigId });
       setResyncToken((n) => n + 1);
       toast.success(t("conversationStarted"));
     },
-    [t],
+    [t, whatsappConfigId],
   );
 
 
@@ -638,6 +664,8 @@ function InboxPageInner() {
             conversations={conversations}
             onConversationsLoaded={handleConversationsLoaded}
             resyncToken={resyncToken}
+            whatsappConfigId={whatsappConfigId}
+            lineReady={lineReady}
             onNewMessage={
               canSendMessages ? () => setNewConversationOpen(true) : undefined
             }

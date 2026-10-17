@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
+import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
@@ -49,6 +50,7 @@ export function ContactForm({
   const t = useTranslations('Contacts.form');
   const supabase = createClient();
   const { accountId } = useAuth();
+  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
   const isEdit = !!contact;
 
   const [name, setName] = useState('');
@@ -93,7 +95,7 @@ export function ContactForm({
     }
     setCheckingDup(true);
     try {
-      const existing = await findExistingContact(supabase, accountId, value);
+      const existing = await findExistingContact(supabase, accountId, value, whatsappConfigId);
       setDupMatch(
         existing
           ? { contact: existing, exact: isExactMatch(existing, value) }
@@ -171,6 +173,7 @@ export function ContactForm({
             phone: phone.trim(),
             email: email.trim() || null,
             company: company.trim() || null,
+            whatsapp_config_id: whatsappConfigId,
           })
           .select('id')
           .single();
@@ -208,6 +211,7 @@ export function ContactForm({
             supabase,
             accountId,
             phone.trim(),
+            whatsappConfigId,
           );
           if (existing) setDupMatch({ contact: existing, exact: true });
         }

@@ -21,6 +21,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
+import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 import { SendMessageError } from '@/lib/whatsapp/send-message';
 import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
@@ -59,11 +60,7 @@ export async function resolveConversationByPhone(
 
   // Fail fast (and create nothing) when the account has no WhatsApp
   // connected — the same error the send would raise anyway.
-  const { data: config } = await db
-    .from('whatsapp_config')
-    .select('id')
-    .eq('account_id', accountId)
-    .maybeSingle();
+  const config = await resolveWhatsAppConfig(db, { accountId }).catch(() => null);
   if (!config) {
     throw new SendMessageError(
       'whatsapp_not_configured',
@@ -96,7 +93,7 @@ export async function resolveConversationByPhone(
 
   const existing = preferredContactId
     ? { id: preferredContactId, name: null as string | null }
-    : await findExistingContact(db, accountId, sanitized);
+    : await findExistingContact(db, accountId, sanitized, config.id);
   if (existing) {
     contactId = existing.id;
     const existingName = existing.name?.trim() ?? '';
@@ -120,6 +117,7 @@ export async function resolveConversationByPhone(
         user_id: ownerUserId,
         phone: sanitized,
         name: name || sanitized,
+        whatsapp_config_id: config.id ?? null,
       })
       .select('id')
       .single();
@@ -128,7 +126,7 @@ export async function resolveConversationByPhone(
       // Lost a race against a concurrent inbound/API create — the
       // unique index (migration 022) rejected the duplicate. Re-resolve.
       if (isUniqueViolation(createErr)) {
-        const raced = await findExistingContact(db, accountId, sanitized);
+        const raced = await findExistingContact(db, accountId, sanitized, config.id);
         if (raced) {
           contactId = raced.id;
         } else {
@@ -161,7 +159,8 @@ export async function resolveConversationByPhone(
     db,
     accountId,
     contactId,
-    ownerUserId
+    ownerUserId,
+    config.id,
   );
 
   return {
@@ -182,13 +181,16 @@ async function findOrCreateConversationRow(
   db: SupabaseClient,
   accountId: string,
   contactId: string,
-  ownerUserId: string
+  ownerUserId: string,
+  whatsappConfigId?: string | null,
 ): Promise<{ id: string; created: boolean }> {
-  const { data: existing, error: findErr } = await db
+  let lookup = db
     .from('conversations')
     .select('id')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+  if (whatsappConfigId) lookup = lookup.eq('whatsapp_config_id', whatsappConfigId)
+  const { data: existing, error: findErr } = await lookup
     .order('created_at', { ascending: true })
     .limit(1);
 
@@ -207,17 +209,20 @@ async function findOrCreateConversationRow(
       account_id: accountId,
       user_id: ownerUserId,
       contact_id: contactId,
+      whatsapp_config_id: whatsappConfigId ?? null,
     })
     .select('id')
     .single();
 
   if (convErr || !newConv) {
     if (isUniqueViolation(convErr)) {
-      const { data: raced } = await db
+      let racedQuery = db
         .from('conversations')
         .select('id')
         .eq('account_id', accountId)
         .eq('contact_id', contactId)
+      if (whatsappConfigId) racedQuery = racedQuery.eq('whatsapp_config_id', whatsappConfigId)
+      const { data: raced } = await racedQuery
         .order('created_at', { ascending: true })
         .limit(1);
       if (raced && raced.length > 0) {

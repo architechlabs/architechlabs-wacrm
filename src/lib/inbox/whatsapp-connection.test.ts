@@ -8,9 +8,14 @@ describe('readWhatsappConnectionStatus', () => {
       data: { status: 'connected' },
       error: null,
     }));
-    const eq = vi.fn(() => ({ abortSignal: () => ({ maybeSingle }) }));
-    const select = vi.fn(() => ({ eq }));
+    const chain = {
+      eq: vi.fn(),
+      abortSignal: vi.fn(() => ({ maybeSingle })),
+    };
+    chain.eq.mockReturnValue(chain);
+    const select = vi.fn(() => chain);
     const from = vi.fn(() => ({ select }));
+    const eq = chain.eq;
     const supabase = { from } as unknown as SupabaseClient;
 
     await expect(
@@ -23,14 +28,12 @@ describe('readWhatsappConnectionStatus', () => {
   });
 
   it('treats a missing or non-connected row as disconnected', async () => {
+    const chain = {
+      eq: () => chain,
+      abortSignal: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+    };
     const supabase = {
-      from: () => ({
-        select: () => ({
-          eq: () => ({
-            abortSignal: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
-          }),
-        }),
-      }),
+      from: () => ({ select: () => chain }),
     } as unknown as SupabaseClient;
 
     await expect(
