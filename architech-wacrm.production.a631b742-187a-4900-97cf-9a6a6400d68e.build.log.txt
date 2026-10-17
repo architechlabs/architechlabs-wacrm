@@ -1,0 +1,83 @@
+2026-10-17T10:39:02.494Z	Initializing build environment...
+2026-10-17T10:39:03.914Z	Success: Finished initializing build environment
+2026-10-17T10:39:04.497Z	Cloning repository...
+2026-10-17T10:39:05.909Z	Detected the following tools from environment: npm@10.9.9, nodejs@24.21.0
+2026-10-17T10:39:09.559Z	Installing project dependencies: npm clean-install --progress=false
+2026-10-17T10:39:18.837Z	npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+2026-10-17T10:39:21.333Z	npm warn deprecated glob@9.3.5: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+2026-10-17T10:39:38.051Z	
+2026-10-17T10:39:38.051Z	added 915 packages in 28s
+2026-10-17T10:39:38.052Z	
+2026-10-17T10:39:38.053Z	272 packages are looking for funding
+2026-10-17T10:39:38.053Z	  run `npm fund` for details
+2026-10-17T10:39:38.236Z	Executing user build command: npx @opennextjs/cloudflare build
+2026-10-17T10:39:41.670Z	
+2026-10-17T10:39:41.670Z	┌─────────────────────────────┐
+2026-10-17T10:39:41.671Z	│ OpenNext — Cloudflare build │
+2026-10-17T10:39:41.671Z	└─────────────────────────────┘
+2026-10-17T10:39:41.671Z	
+2026-10-17T10:39:41.775Z	App directory: /opt/buildhome/repo
+2026-10-17T10:39:41.775Z	Next.js version : 16.2.12
+2026-10-17T10:39:41.777Z	@opennextjs/cloudflare version: 1.20.2
+2026-10-17T10:39:41.777Z	@opennextjs/aws version: 4.1.0
+2026-10-17T10:39:41.777Z	workerd compatibility_date: 2026-08-15
+2026-10-17T10:39:41.778Z	
+2026-10-17T10:39:41.778Z	┌─────────────────────────────────┐
+2026-10-17T10:39:41.778Z	│ OpenNext — Building Next.js app │
+2026-10-17T10:39:41.778Z	└─────────────────────────────────┘
+2026-10-17T10:39:41.778Z	
+2026-10-17T10:39:41.953Z	
+2026-10-17T10:39:41.953Z	> wacrm@0.8.0 build
+2026-10-17T10:39:41.953Z	> next build
+2026-10-17T10:39:41.954Z	
+2026-10-17T10:39:43.475Z	⚠ No build cache found. Please configure build caching for faster rebuilds. Read more: https://nextjs.org/docs/messages/no-cache
+2026-10-17T10:39:43.479Z	Attention: Next.js now collects completely anonymous telemetry regarding usage.
+2026-10-17T10:39:43.479Z	This information is used to shape Next.js' roadmap and prioritize features.
+2026-10-17T10:39:43.479Z	You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+2026-10-17T10:39:43.479Z	https://nextjs.org/telemetry
+2026-10-17T10:39:43.479Z	
+2026-10-17T10:39:43.573Z	▲ Next.js 16.2.12 (Turbopack)
+2026-10-17T10:39:43.574Z	- Experiments (use with caution):
+2026-10-17T10:39:43.574Z	  · staleTimes
+2026-10-17T10:39:43.574Z	
+2026-10-17T10:39:43.611Z	⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+2026-10-17T10:39:43.713Z	  Creating an optimized production build ...
+2026-10-17T10:40:08.828Z	✓ Compiled successfully in 24.8s
+2026-10-17T10:40:08.832Z	  Running TypeScript ...
+2026-10-17T10:40:26.316Z	Failed to type check.
+2026-10-17T10:40:26.316Z	
+2026-10-17T10:40:26.317Z	./src/components/inbox/whatsapp-number-select.tsx:50:65
+2026-10-17T10:40:26.321Z	Type error: Argument of type 'string | null' is not assignable to parameter of type 'string'.
+2026-10-17T10:40:26.322Z	  Type 'null' is not assignable to type 'string'.
+2026-10-17T10:40:26.322Z	
+2026-10-17T10:40:26.322Z	  48 |       ) : null}
+2026-10-17T10:40:26.322Z	  49 |
+2026-10-17T10:40:26.322Z	> 50 |       <Select value={value} onValueChange={(id) => selectNumber(id)}>
+2026-10-17T10:40:26.322Z	     |                                                                 ^
+2026-10-17T10:40:26.322Z	  51 |         <SelectTrigger
+2026-10-17T10:40:26.322Z	  52 |           aria-label={t('whatsappNumber')}
+2026-10-17T10:40:26.322Z	  53 |           className={cn(
+2026-10-17T10:40:26.446Z	Next.js build worker exited with code: 1 and signal: null
+2026-10-17T10:40:26.545Z	node:internal/errors:986
+2026-10-17T10:40:26.546Z	  const err = new Error(message);
+2026-10-17T10:40:26.546Z	              ^
+2026-10-17T10:40:26.546Z	
+2026-10-17T10:40:26.546Z	Error: Command failed: npm run build
+2026-10-17T10:40:26.546Z	    at genericNodeError (node:internal/errors:986:15)
+2026-10-17T10:40:26.546Z	    at wrappedFn (node:internal/errors:540:14)
+2026-10-17T10:40:26.546Z	    at checkExecSyncError (node:child_process:942:11)
+2026-10-17T10:40:26.546Z	    at Object.execSync (node:child_process:1014:15)
+2026-10-17T10:40:26.546Z	    at buildNextjsApp (file:///opt/buildhome/repo/node_modules/@opennextjs/aws/dist/build/buildNextApp.js:15:8)
+2026-10-17T10:40:26.546Z	    at build (file:///opt/buildhome/repo/node_modules/@opennextjs/cloudflare/dist/cli/build/build.js:63:9)
+2026-10-17T10:40:26.546Z	    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+2026-10-17T10:40:26.546Z	    at async buildCommand (file:///opt/buildhome/repo/node_modules/@opennextjs/cloudflare/dist/cli/commands/build.js:40:5) {
+2026-10-17T10:40:26.546Z	  status: 1,
+2026-10-17T10:40:26.546Z	  signal: null,
+2026-10-17T10:40:26.546Z	  output: [ null, null, null ],
+2026-10-17T10:40:26.546Z	  pid: 1471,
+2026-10-17T10:40:26.546Z	  stdout: null,
+2026-10-17T10:40:26.546Z	  stderr: null
+2026-10-17T10:40:26.546Z	}
+2026-10-17T10:40:26.546Z	
+2026-10-17T10:40:26.546Z	Node.js v24.21.0
+2026-10-17T10:40:26.599Z	Failed: error occurred while running build command

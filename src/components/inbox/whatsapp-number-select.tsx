@@ -47,7 +47,12 @@ export function WhatsAppNumberSelect({ variant = 'sidebar' }: { variant?: Varian
         </p>
       ) : null}
 
-      <Select value={value} onValueChange={(id) => selectNumber(id)}>
+      <Select
+        value={value}
+        onValueChange={(id) => {
+          if (id) selectNumber(id);
+        }}
+      >
         <SelectTrigger
           aria-label={t('whatsappNumber')}
           className={cn(
