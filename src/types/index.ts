@@ -409,8 +409,8 @@ export interface Deal {
   assignee?: Profile;
 }
 
-export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
-export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
+export type BroadcastStatus = 'draft' | 'scheduled' | 'queued' | 'sending' | 'sent' | 'failed';
+export type RecipientStatus = 'queued' | 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
 
 export interface Broadcast {
   id: string;
@@ -453,6 +453,7 @@ export interface BroadcastRecipient {
   read_at?: string;
   replied_at?: string;
   error_message?: string;
+  error_code?: number | null;
   /**
    * Meta's message id, persisted when the broadcast send succeeds so
    * the webhook can mirror status updates back onto the recipient row.

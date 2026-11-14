@@ -95,6 +95,32 @@ export function phoneVariants(sanitized: string): string[] {
 }
 
 /**
+ * Format a phone number for display in the UI.
+ * e.g. "918796778485" or "+918796778485" -> "+91 87967 78485"
+ * e.g. "917428222333" -> "+91 74282 22333"
+ */
+export function formatDisplayPhone(phone: string): string {
+  if (!phone) return '';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
+  }
+  if (digits.length === 10) {
+    return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  }
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`;
+  }
+  if (phone.startsWith('+')) {
+    return phone;
+  }
+  if (digits.length > 0) {
+    return `+${digits}`;
+  }
+  return phone;
+}
+
+/**
  * Returns true when the Meta API error indicates the recipient
  * phone number isn't in the allowed list (sandbox restriction).
  * Detected via error code 131030 or the standard error text.
