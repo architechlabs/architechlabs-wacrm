@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import { shouldPauseBroadcast } from '@/lib/whatsapp/delivery-errors';
 import { resolveWhatsAppConfig } from '@/lib/whatsapp/resolve-config';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { deliverBroadcastRecipient, finalizeBroadcastStatus, type BroadcastPlan } from '@/lib/whatsapp/broadcast-core';
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
         messageParams: requestedRow?.messageParams as SendTimeParams | undefined,
       });
       results.push({ phone, status: result.status, whatsapp_message_id: result.messageId, error: result.error, error_code: result.errorCode });
-      if (result.errorCode && [131048, 131056, 130429, 131049].includes(result.errorCode)) { stopped = true; break; }
+      if (shouldPauseBroadcast(result.errorCode)) { stopped = true; break; }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await finalizeBroadcastStatus(admin, broadcastId);

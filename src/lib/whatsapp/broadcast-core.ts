@@ -20,6 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { MetaApiError, sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
+import { shouldPauseBroadcast } from '@/lib/whatsapp/delivery-errors';
 import { resolveWhatsAppConfig, WhatsAppConfigLookupError } from '@/lib/whatsapp/resolve-config';
 import {
   sanitizePhoneForMeta,
@@ -295,7 +296,7 @@ export async function deliverBroadcast(
 ): Promise<void> {
   for (const recipient of plan.planned) {
     const result = await deliverBroadcastRecipient(db, plan, recipient);
-    if (result.errorCode && [131048, 131056, 130429, 131049].includes(result.errorCode)) break;
+    if (shouldPauseBroadcast(result.errorCode)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
@@ -386,8 +387,8 @@ export async function deliverBroadcastRecipient(
         })
         .eq('id', recipient.recipientRowId);
     }
-    if (errorCode && [131048, 131056, 130429, 131049].includes(errorCode)) {
-      await db.from('broadcasts').update({ delivery_paused_at: new Date().toISOString() })
+    if (shouldPauseBroadcast(errorCode)) {
+      await db.from('broadcasts').update({ delivery_paused_at: new Date().toISOString(), delivery_pause_reason: `Meta error ${errorCode}` })
         .eq('id', plan.broadcastId).eq('account_id', plan.accountId);
     }
     return sentMessageId

@@ -237,13 +237,13 @@ export default function BroadcastDetailPage() {
    * stuck 'sending'. This is the recovery, and the same call retries
    * failed recipients.
    */
-  async function handleResume(scope: 'pending' | 'failed') {
+  async function handleResume(scope: 'pending' | 'failed', acknowledgePause = false) {
     setResumingScope(scope);
     try {
       const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/resume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope }),
+        body: JSON.stringify({ scope, acknowledge_pause: acknowledgePause }),
       });
       const payload = await res.json().catch(() => ({}));
 
@@ -319,8 +319,8 @@ export default function BroadcastDetailPage() {
 
   const status = getBroadcastStatus(broadcast.status);
 
-  const pendingCount = recipients.filter((r) => r.status === 'pending').length;
-  const retryableCount = recipients.filter((r) => r.status === 'failed').length;
+  const pendingCount = recipients.filter((r) => r.status === 'pending' && !r.send_started_at && !r.whatsapp_message_id).length;
+  const retryableCount = recipients.filter((r) => r.status === 'failed' && !r.send_started_at && !r.whatsapp_message_id).length;
   // A campaign whose tab went away sits in 'sending' with recipients
   // still pending and nothing left to move them. Name that state rather
   // than leaving a permanently pulsing "sending" badge.
@@ -411,11 +411,11 @@ export default function BroadcastDetailPage() {
 
       {/* Resume / retry (issue #472). Only rendered when there is
           actually something outstanding. */}
-      {(pendingCount > 0 || retryableCount > 0) && (
+      {(broadcast.delivery_paused_at || pendingCount > 0 || retryableCount > 0) && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
           <div className="text-sm">
             <p className="font-medium text-foreground">
-              {isStalled ? t('resumeStalledTitle') : t('resumeTitle')}
+              {broadcast.delivery_paused_at ? `Paused: ${broadcast.delivery_pause_reason || 'Meta limit or quality error (reason not recorded)'}` : isStalled ? t('resumeStalledTitle') : t('resumeTitle')}
             </p>
             <p className="mt-0.5 text-muted-foreground">
               {isStalled
@@ -424,7 +424,12 @@ export default function BroadcastDetailPage() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {pendingCount > 0 && (
+            {pendingCount > 0 && broadcast.delivery_paused_at && (
+              <Button size="sm" disabled={resumingScope !== null} onClick={() => {
+                if (window.confirm('Resume sending despite this pause?')) void handleResume('pending', true);
+              }}>Resume anyway</Button>
+            )}
+            {pendingCount > 0 && !broadcast.delivery_paused_at && (
               <Button
                 size="sm"
                 onClick={() => handleResume('pending')}
@@ -438,7 +443,7 @@ export default function BroadcastDetailPage() {
                 {t('resumePending', { count: pendingCount })}
               </Button>
             )}
-            {retryableCount > 0 && (
+            {retryableCount > 0 && !broadcast.delivery_paused_at && (
               <Button
                 variant="outline"
                 size="sm"

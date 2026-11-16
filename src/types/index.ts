@@ -437,6 +437,8 @@ export interface Broadcast {
    * send. Added in migration 038.
    */
   delivery_locked_at?: string | null;
+  delivery_paused_at?: string | null;
+  delivery_pause_reason?: string | null;
   created_at: string;
 }
 
@@ -456,6 +458,7 @@ export interface BroadcastRecipient {
   replied_at?: string;
   error_message?: string;
   delivery_outcome?: string | null;
+  send_started_at?: string | null;
   error_code?: number | null;
   /**
    * Meta's message id, persisted when the broadcast send succeeds so

@@ -60,7 +60,7 @@ describe('claimBroadcastDelivery', () => {
       new Date('2026-08-11T12:00:00Z'),
     );
 
-    expect(ok).toBe(true);
+    expect(ok).toBe('2026-08-11T12:00:00.000Z');
     expect(calls[0].filters).toEqual({ id: 'bc-1', account_id: 'acct-1' });
     expect(calls[0].update.delivery_locked_at).toBe(
       '2026-08-11T12:00:00.000Z',
@@ -74,7 +74,7 @@ describe('claimBroadcastDelivery', () => {
       'acct-1',
       'bc-1',
     );
-    expect(ok).toBe(false);
+    expect(ok).toBeNull();
   });
 
   it('treats a lock older than the staleness window as abandoned', async () => {
@@ -102,9 +102,9 @@ describe('claimBroadcastDelivery', () => {
 describe('releaseBroadcastDelivery', () => {
   it('clears the lock', async () => {
     const calls: ClaimCall[] = [];
-    await releaseBroadcastDelivery(claimDb([], calls), 'bc-1');
+    await releaseBroadcastDelivery(claimDb([], calls), 'bc-1', 'token');
     expect(calls[0].update).toEqual({ delivery_locked_at: null });
-    expect(calls[0].filters).toEqual({ id: 'bc-1' });
+    expect(calls[0].filters).toEqual({ id: 'bc-1', delivery_locked_at: 'token' });
   });
 });
 
@@ -121,6 +121,7 @@ interface PlanFixture {
 
 interface PlanWrites {
   statusFilter?: unknown;
+  nullFilters?: string[];
   failedIds?: unknown;
   failedUpdate?: Record<string, unknown>;
 }
@@ -131,7 +132,7 @@ function planDb(fx: PlanFixture, writes: PlanWrites = {}): SupabaseClient {
       const b: Record<string, unknown> = {
         select: () => b,
         eq: () => b,
-        is: () => b,
+        is: (col: string) => { (writes.nullFilters ??= []).push(col); return b; },
         order: () => b,
         in: (col: string, vals: unknown) => {
           if (col === 'status') writes.statusFilter = vals;
@@ -159,6 +160,7 @@ function planDb(fx: PlanFixture, writes: PlanWrites = {}): SupabaseClient {
           if (table === 'message_templates') {
             return resolve({ data: fx.templates ?? [], error: null });
           }
+          if (table === 'broadcasts') return resolve({ data: [{ id: 'bc-1' }], error: null });
           return resolve({ data: [], error: null });
         },
       };
@@ -188,6 +190,17 @@ function recipient(
 }
 
 describe('planBroadcastResume', () => {
+  it('requires explicit acknowledgement and reports the reason for a pause', async () => {
+    await expect(planBroadcastResume(planDb({ broadcast: { ...BROADCAST, delivery_paused_at: '2026-01-01', delivery_pause_reason: 'Meta error 131048' } }), 'acct-1', 'bc-1', 'pending'))
+      .rejects.toMatchObject({ code: 'broadcast_paused', status: 409, message: expect.stringContaining('131048') });
+  });
+
+  it('atomically clears an acknowledged pause before planning', async () => {
+    const writes: PlanWrites = {};
+    const result = await planBroadcastResume(planDb({ broadcast: { ...BROADCAST, delivery_paused_at: '2026-01-01', delivery_pause_reason: 'Meta error 131048' }, config: CONFIG, recipients: [recipient('r1', '+15551234567')] }, writes), 'acct-1', 'bc-1', 'pending', true);
+    expect(writes.failedUpdate).toEqual({ delivery_paused_at: null, delivery_pause_reason: null });
+    expect(result.plan.planned).toHaveLength(1);
+  });
   it('plans the outstanding recipients with their frozen params', async () => {
     const writes: PlanWrites = {};
     const { plan, remaining, unsendable } = await planBroadcastResume(
@@ -208,6 +221,7 @@ describe('planBroadcastResume', () => {
     );
 
     expect(writes.statusFilter).toEqual(['pending']);
+    expect(writes.nullFilters).toEqual(['send_started_at', 'whatsapp_message_id']);
     // Phones are stored sanitized (no leading '+'), same as the shape
     // createBroadcast plans — deliverBroadcast feeds them to
     // phoneVariants from here.

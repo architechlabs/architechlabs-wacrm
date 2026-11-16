@@ -45,7 +45,7 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  let claimedId: string | null = null;
+  let claimedLock: { id: string; token: string; db: Awaited<ReturnType<typeof requireRole>>['supabase'] } | null = null;
 
   try {
     // Same gate as the batch send endpoint: running a broadcast is a
@@ -80,18 +80,17 @@ export async function POST(
         { status: 409 }
       );
     }
-    claimedId = id;
+    claimedLock = { id, token: claimed, db: supabase };
 
     const { plan, remaining, unsendable } = await planBroadcastResume(
       supabase,
       accountId,
       id,
-      scope
+      scope,
+      body?.acknowledge_pause === true,
     );
 
     await markBroadcastSending(supabase, id);
-    claimedId = null; // ownership passes to the after() block
-
     // Service-role client for the fan-out: it outlives the request, and
     // every id in the plan was already resolved through an
     // account-scoped read above.
@@ -107,9 +106,10 @@ export async function POST(
         // Don't leave it mid-flight — settle whatever did land.
         await finalizeBroadcastStatus(admin, id).catch(() => {});
       } finally {
-        await releaseBroadcastDelivery(admin, id);
+        await releaseBroadcastDelivery(admin, id, claimed);
       }
     });
+    claimedLock = null; // ownership passes only after scheduling succeeds
 
     return NextResponse.json(
       {
@@ -128,8 +128,8 @@ export async function POST(
   } catch (error) {
     // Planning failed after the claim — release it, or the campaign is
     // locked out of resuming until the staleness window expires.
-    if (claimedId) {
-      await releaseBroadcastDelivery(supabaseAdmin(), claimedId).catch(() => {});
+    if (claimedLock) {
+      await releaseBroadcastDelivery(claimedLock.db, claimedLock.id, claimedLock.token).catch(() => {});
     }
     if (error instanceof BroadcastError) {
       return NextResponse.json(

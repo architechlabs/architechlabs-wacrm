@@ -3,11 +3,17 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
   classifyWhatsAppDeliveryError,
+  shouldPauseBroadcast,
   findTemplateDeliveryRestriction,
   isMarketingTemplateCategory,
   isNoCustomerResponseConversation,
 } from './delivery-errors';
 import type { Message } from '@/types';
+
+describe('broadcast pause classification', () => {
+  it.each([131048, 130429, 131056, 368, 131031, 190])('pauses for account-level code %s', code => expect(shouldPauseBroadcast(code)).toBe(true));
+  it('continues after a recipient marketing restriction', () => expect(shouldPauseBroadcast(131049)).toBe(false));
+});
 
 function message(overrides: Partial<Message> = {}): Message {
   return {

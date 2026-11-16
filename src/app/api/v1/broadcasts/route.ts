@@ -47,6 +47,7 @@ import { claimBroadcastDelivery, releaseBroadcastDelivery } from '@/lib/whatsapp
 import { continueBroadcastAutomatically } from '@/lib/whatsapp/broadcast-continuation';
 
 export async function POST(request: Request) {
+  let lock: { db: Awaited<ReturnType<typeof requireApiKey>>['supabase']; id: string; token: string } | null = null;
   try {
     const ctx = await requireApiKey(request, 'broadcasts:send');
 
@@ -83,14 +84,17 @@ export async function POST(request: Request) {
     // Fan out after the response is sent. Uses the same service-role
     // client — no request-scoped auth needed for the Meta calls or
     // the account-scoped row updates.
-    if (!await claimBroadcastDelivery(ctx.supabase, ctx.accountId, plan.broadcastId)) {
+    const token = await claimBroadcastDelivery(ctx.supabase, ctx.accountId, plan.broadcastId);
+    if (!token) {
       return fail('busy', 'Broadcast created but could not start delivery', 409);
     }
+    lock = { db: ctx.supabase, id: plan.broadcastId, token };
     after(async () => {
       try { await deliverBroadcast(ctx.supabase, { ...plan, planned: plan.planned.slice(0, 10) }); }
-      finally { await releaseBroadcastDelivery(ctx.supabase, plan.broadcastId); }
+      finally { await releaseBroadcastDelivery(ctx.supabase, plan.broadcastId, token); }
       await continueBroadcastAutomatically(ctx.supabase, ctx.accountId, plan.broadcastId, request.url, request.headers.get('authorization'));
     });
+    lock = null;
 
     return ok(
       {
@@ -104,6 +108,7 @@ export async function POST(request: Request) {
       202
     );
   } catch (err) {
+    if (lock) await releaseBroadcastDelivery(lock.db, lock.id, lock.token).catch(() => {});
     if (err instanceof BroadcastError) {
       if (err.recipientErrors) return NextResponse.json({ error: { code: err.code, message: err.message, recipient_errors: err.recipientErrors } }, { status: err.status });
       return fail(err.code, err.message, err.status);

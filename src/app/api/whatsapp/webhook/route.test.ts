@@ -31,6 +31,9 @@ const h = vi.hoisted(() => ({
     /** Error the next storage upload resolves with, if any. */
     storageUploadError: null as { message: string } | null,
     messageStatusUpdates: [] as Record<string, unknown>[],
+    recipientStatus: null as { id: string; status: string; broadcast_id: string } | null,
+    recipientUpdates: [] as Record<string, unknown>[],
+    broadcastUpdates: [] as Record<string, unknown>[],
     messageStatusLookup: {
       conversation_id: 'conv-1',
       conversations: { account_id: 'acc-1' },
@@ -101,7 +104,7 @@ vi.mock('@supabase/supabase-js', () => ({
                 ? {
                     eq: () => ({
                       maybeSingle: () =>
-                        Promise.resolve({ data: null, error: null }),
+                        Promise.resolve({ data: h.state.recipientStatus, error: null }),
                     }),
                   }
                 : {
@@ -116,7 +119,16 @@ vi.mock('@supabase/supabase-js', () => ({
                       }),
                     }),
                   },
+            update: (row: Record<string, unknown>) => {
+              h.state.recipientUpdates.push(row)
+              return { eq: () => Promise.resolve({ error: null }) }
+            },
           }
+        case 'broadcasts':
+          return { update: (row: Record<string, unknown>) => {
+            h.state.broadcastUpdates.push(row)
+            return { eq: () => Promise.resolve({ error: null }) }
+          } }
         case 'messages':
           return {
             update: (row: Record<string, unknown>) => {
@@ -361,6 +373,9 @@ beforeEach(() => {
   h.state.storageUploads = []
   h.state.storageUploadError = null
   h.state.messageStatusUpdates = []
+  h.state.recipientStatus = null
+  h.state.recipientUpdates = []
+  h.state.broadcastUpdates = []
   h.state.messageStatusLookup = {
     conversation_id: 'conv-1',
     conversations: { account_id: 'acc-1' },
@@ -434,6 +449,12 @@ describe('inbound webhook: atomic unread bump (#369)', () => {
 })
 
 describe('initiated-template webhook integration', () => {
+  it.each([[131049, false], [131048, true], [130429, true]])('records failure %s and pauses only account errors', async (code, pauses) => {
+    h.state.recipientStatus = { id: 'recipient-1', status: 'sent', broadcast_id: 'broadcast-1' }
+    await runStatusWebhook('failed', [{ code, title: 'Meta delivery error' }])
+    expect(h.state.recipientUpdates).toContainEqual(expect.objectContaining({ status: 'failed', error_code: code }))
+    expect(h.state.broadcastUpdates.length > 0).toBe(pauses)
+  })
   it.each(['sent', 'delivered', 'read'])(
     'locates the persisted wamid and applies a %s status update',
     async (status) => {

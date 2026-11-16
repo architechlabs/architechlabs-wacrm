@@ -15,21 +15,8 @@ name: Migrations
 
 on:
   pull_request:
-    # `supabase/**` rather than `supabase/migrations/**` so a change to
-    # config.toml re-runs the check too, and this workflow is listed so
-    # that edits to the check are validated by the check.
-    #
-    # NOTE: if this is ever made a REQUIRED status check, drop these
-    # filters. GitHub leaves a required check that never ran stuck as
-    # "expected", which blocks every PR that doesn't touch SQL.
-    paths:
-      - 'supabase/**'
-      - '.github/workflows/migrations.yml'
   push:
     branches: [main]
-    paths:
-      - 'supabase/**'
-      - '.github/workflows/migrations.yml'
 
 concurrency:
   group: migrations-${{ github.ref }}

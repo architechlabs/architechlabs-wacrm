@@ -164,6 +164,36 @@ Domain error codes beyond the table above: `whatsapp_not_configured`
 (400), `meta_error` (502 — the request reached Meta and it rejected the
 send), `template_malformed` (500).
 
+### `POST /api/v1/messages/log`
+
+Record a message already sent outside the CRM. Scope: `messages:send`.
+This endpoint never calls Meta or sends a message. Supply the Meta ID and
+the destination in E.164 digits. It creates the contact and conversation if
+necessary and returns the existing message unchanged for a duplicate WAMID.
+
+```bash
+curl -X POST https://your-crm.example.com/api/v1/messages/log \
+  -H "Authorization: Bearer $WHATSAPP_CRM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"919999999999","wamid":"wamid.example","type":"template","template_name":"welcome_greeting","language":"en","template_params":{"body":["Alice"]}}'
+```
+
+For text messages, use `"type":"text"` and provide `"text"` instead of
+template fields. Optional fields: `sent_at` (ISO-8601 with timezone), `status`
+(`sent`, `delivered`, `read`, `failed`), `error_code`, `whatsapp_config_id`,
+and `broadcast_id`. An omitted number uses the workspace default. A broadcast
+must belong to that number and workspace; only an unassigned pending recipient
+is linked. Status webhooks can subsequently update the message.
+
+New records return 201 and duplicates return 200, with
+`{"data":{"message_id":"...","conversation_id":"...","wamid":"...","duplicate":false}}`.
+Validation errors return 400, an unknown number or broadcast returns 404, and
+an unknown template/language returns 422.
+
+For a batch, send `{"messages":[{...}, {...}]}` with 1–500 items. The response
+is `{"data":{"results":[{"index":0,"data":{...}},{"index":1,"error":{"code":"bad_request","message":"...","status":400}}]}}`.
+Each item is processed independently; check every result.
+
 ### `GET /api/v1/contacts`
 
 List contacts, newest first. Scope: `contacts:read`. Paginated (see

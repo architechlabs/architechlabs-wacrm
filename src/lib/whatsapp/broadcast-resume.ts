@@ -70,7 +70,7 @@ export async function claimBroadcastDelivery(
   accountId: string,
   broadcastId: string,
   now: Date = new Date()
-): Promise<boolean> {
+): Promise<string | null> {
   const staleCutoff = new Date(
     now.getTime() - DELIVERY_LOCK_STALE_MS
   ).toISOString();
@@ -85,20 +85,22 @@ export async function claimBroadcastDelivery(
 
   if (error) {
     console.error('[broadcast-resume] claim failed:', error.message);
-    return false;
+    return null;
   }
-  return Array.isArray(data) && data.length > 0;
+  return Array.isArray(data) && data.length > 0 ? now.toISOString() : null;
 }
 
 /** Release the delivery lock. Best-effort; a stale lock self-expires. */
 export async function releaseBroadcastDelivery(
   db: SupabaseClient,
-  broadcastId: string
+  broadcastId: string,
+  lockToken: string
 ): Promise<void> {
   const { error } = await db
     .from('broadcasts')
     .update({ delivery_locked_at: null })
-    .eq('id', broadcastId);
+    .eq('id', broadcastId)
+    .eq('delivery_locked_at', lockToken);
   if (error) {
     console.error('[broadcast-resume] release failed:', error.message);
   }
@@ -143,11 +145,12 @@ export async function planBroadcastResume(
   db: SupabaseClient,
   accountId: string,
   broadcastId: string,
-  scope: ResumeScope
+  scope: ResumeScope,
+  acknowledgePause = false,
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, template_name, template_language, whatsapp_config_id, delivery_paused_at')
+    .select('id, template_name, template_language, whatsapp_config_id, delivery_paused_at, delivery_pause_reason')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -156,7 +159,13 @@ export async function planBroadcastResume(
     throw new BroadcastError('not_found', 'Broadcast not found', 404);
   }
   if (broadcast.delivery_paused_at) {
-    throw new BroadcastError('broadcast_paused', 'Broadcast is paused after a Meta limit or quality error', 409);
+    const reason = broadcast.delivery_pause_reason || 'Meta limit or quality error (reason not recorded)';
+    if (!acknowledgePause) throw new BroadcastError('broadcast_paused', `Broadcast paused: ${reason}`, 409);
+    const { data: cleared, error: clearError } = await db.from('broadcasts')
+      .update({ delivery_paused_at: null, delivery_pause_reason: null })
+      .eq('id', broadcastId).eq('account_id', accountId)
+      .eq('delivery_paused_at', broadcast.delivery_paused_at).select('id');
+    if (clearError || !cleared?.length) throw new BroadcastError('broadcast_paused', 'Broadcast pause changed; refresh and try again', 409);
   }
 
   const statuses = scopeStatuses(scope);
@@ -248,6 +257,17 @@ export async function planBroadcastResume(
       'Template row is malformed locally — run "Sync from Meta" in Settings to repair it before resuming.',
       500
     );
+  }
+
+  // The claim RPC accepts only pending rows. Only reset failed rows that
+  // have never been attempted; attempted rows must never be sent again.
+  if (scope !== 'pending') {
+    const { error } = await db.from('broadcast_recipients')
+      .update({ status: 'pending' })
+      .eq('broadcast_id', broadcastId).eq('status', 'failed')
+      .is('send_started_at', null).is('whatsapp_message_id', null)
+      .in('id', slice.map((row) => row.id));
+    if (error) throw new BroadcastError('internal', 'Failed to prepare recipients for resuming', 500);
   }
 
   const plan: BroadcastPlan = {

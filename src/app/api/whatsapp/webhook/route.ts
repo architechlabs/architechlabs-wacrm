@@ -1,6 +1,7 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
+import { shouldPauseBroadcast } from '@/lib/whatsapp/delivery-errors'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
@@ -642,9 +643,9 @@ async function handleStatusUpdate(status: {
     }
     if (status.status === 'failed' && recipient.broadcast_id) {
       const code = extractFailureDetails(status.errors)?.failureCode
-      if (code && [131048, 131056, 130429, 131049].includes(code)) {
+      if (shouldPauseBroadcast(code)) {
         await supabaseAdmin().from('broadcasts')
-          .update({ delivery_paused_at: new Date().toISOString() })
+          .update({ delivery_paused_at: new Date().toISOString(), delivery_pause_reason: `Meta error ${code}` })
           .eq('id', recipient.broadcast_id)
       }
     }

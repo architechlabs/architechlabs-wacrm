@@ -12,6 +12,8 @@
 -- build the schema", not a spec of it — asserting every column here
 -- would just be the migrations restated in a second place, drifting.
 DO $$
+DECLARE
+  missing_columns text;
 BEGIN
   -- The core tables, from 001.
   IF to_regclass('public.messages') IS NULL THEN
@@ -89,6 +91,67 @@ BEGIN
     'EXECUTE'
   ) THEN
     RAISE EXCEPTION 'authenticated must be able to execute Inbox pagination functions';
+  END IF;
+
+  -- Broadcast creation, delivery and inbox persistence depend on these
+  -- columns, including when only application code changes in a PR.
+  SELECT string_agg(required.table_name || '.' || required.column_name, ', ' ORDER BY required.table_name, required.column_name)
+  INTO missing_columns
+  FROM (VALUES
+    ('broadcasts','account_id'), ('broadcasts','user_id'), ('broadcasts','name'),
+    ('broadcasts','template_name'), ('broadcasts','template_language'),
+    ('broadcasts','template_variables'), ('broadcasts','audience_filter'),
+    ('broadcasts','whatsapp_config_id'), ('broadcasts','idempotency_key'),
+    ('broadcasts','delivery_paused_at'), ('broadcasts','status'), ('broadcasts','total_recipients'),
+    ('broadcasts','sent_count'), ('broadcasts','delivered_count'), ('broadcasts','read_count'),
+    ('broadcasts','replied_count'), ('broadcasts','failed_count'), ('broadcasts','updated_at'),
+    ('broadcast_recipients','broadcast_id'), ('broadcast_recipients','contact_id'),
+    ('broadcast_recipients','phone_e164'), ('broadcast_recipients','template_params'),
+    ('broadcast_recipients','status'), ('broadcast_recipients','send_started_at'),
+    ('broadcast_recipients','delivery_outcome'), ('broadcast_recipients','whatsapp_message_id'),
+    ('broadcast_recipients','error_message'), ('broadcast_recipients','error_code'),
+    ('broadcast_recipients','sent_at'),
+    ('messages','conversation_id'), ('messages','sender_type'), ('messages','content_type'),
+    ('messages','content_text'), ('messages','template_name'), ('messages','status'),
+    ('messages','broadcast_id'), ('messages','message_id'), ('messages','failure_code'),
+    ('messages','failure_reason'), ('messages','created_at'),
+    ('conversations','account_id'), ('conversations','contact_id'),
+    ('conversations','whatsapp_config_id'), ('conversations','last_message_text'),
+    ('conversations','last_message_at'), ('conversations','updated_at'),
+    ('contacts','account_id'), ('contacts','user_id'), ('contacts','whatsapp_config_id'),
+    ('contacts','phone'), ('contacts','phone_normalized'), ('contacts','name'),
+    ('message_templates','account_id'), ('message_templates','waba_id'),
+    ('message_templates','whatsapp_config_id'), ('message_templates','name'),
+    ('message_templates','language'), ('message_templates','status'),
+    ('message_templates','meta_template_id'), ('message_templates','meta_components')
+  ) AS required(table_name, column_name)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'public' AND c.table_name = required.table_name
+      AND c.column_name = required.column_name
+  );
+  IF missing_columns IS NOT NULL THEN
+    RAISE EXCEPTION 'Broadcast schema is missing columns: %', missing_columns;
+  END IF;
+
+  IF to_regprocedure('public.get_inbox_awaiting_reply(uuid)') IS NULL
+     OR NOT has_function_privilege('authenticated', 'public.get_inbox_awaiting_reply(uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'Authenticated Inbox awaiting-reply RPC is missing';
+  END IF;
+  IF to_regprocedure('public.create_broadcast_with_contacts(uuid,uuid,text,text,text,jsonb,uuid,text)') IS NULL
+     OR NOT has_function_privilege('service_role', 'public.create_broadcast_with_contacts(uuid,uuid,text,text,text,jsonb,uuid,text)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'Broadcast contact creation RPC is missing';
+  END IF;
+  IF to_regprocedure('public.claim_broadcast_recipient(uuid,uuid,uuid)') IS NULL
+     OR NOT has_function_privilege('service_role', 'public.claim_broadcast_recipient(uuid,uuid,uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'Broadcast recipient claim RPC is missing';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index i
+    WHERE i.indexrelid = to_regclass('public.idx_broadcast_account_idempotency')
+      AND i.indisunique AND i.indisvalid AND i.indisready
+  ) THEN
+    RAISE EXCEPTION 'Broadcast idempotency index is missing or invalid';
   END IF;
 
   RAISE NOTICE 'schema verification passed';

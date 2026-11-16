@@ -4,6 +4,12 @@ import type { Message } from '@/types';
 
 const ECOSYSTEM_ENGAGEMENT_ERROR_CODE = 131049;
 
+export const ACCOUNT_LEVEL_PAUSE_CODES = [131048, 130429, 131056, 368, 131031, 190] as const;
+
+export function shouldPauseBroadcast(code: number | null | undefined): boolean {
+  return code != null && (ACCOUNT_LEVEL_PAUSE_CODES as readonly number[]).includes(code);
+}
+
 export type WhatsAppDeliveryErrorCategory = 'recipient_delivery_restriction';
 
 export interface WhatsAppDeliveryErrorClassification {
