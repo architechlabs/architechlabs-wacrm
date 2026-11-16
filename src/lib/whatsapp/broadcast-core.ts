@@ -27,7 +27,6 @@ import {
 } from '@/lib/whatsapp/phone-utils';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import type { MessageTemplate } from '@/types';
-import { findOrCreateContact } from '@/lib/api/v1/contacts';
 import { finishBroadcastMessage, reserveBroadcastMessage } from '@/lib/whatsapp/broadcast-message';
 import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder';
 
@@ -35,11 +34,13 @@ import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder';
 export class BroadcastError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(code: string, message: string, status: number) {
+  readonly recipientErrors?: { index: number; phone: string; reason: string }[];
+  constructor(code: string, message: string, status: number, recipientErrors?: { index: number; phone: string; reason: string }[]) {
     super(message);
     this.name = 'BroadcastError';
     this.code = code;
     this.status = status;
+    this.recipientErrors = recipientErrors;
   }
 }
 
@@ -80,6 +81,7 @@ export interface BroadcastPlan {
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
   rejected: number;
+  recipientErrors?: { index: number; phone: string; reason: string }[];
 }
 
 const MAX_RECIPIENTS = 1000;
@@ -145,6 +147,9 @@ export async function createBroadcast(
       400
     );
   }
+  if (!config.waba_id) {
+    throw new BroadcastError('whatsapp_not_configured', 'The selected WhatsApp number has no WABA ID.', 400);
+  }
   const accessToken = decrypt(config.access_token);
 
   // Template row (once) for header/button components; guard a
@@ -164,22 +169,28 @@ export async function createBroadcast(
     );
   }
   const templateRow = resolvedTemplate.row;
+  if (!templateRow || templateRow.status !== 'APPROVED' ||
+      (params.templateLanguage && templateRow.language?.toLowerCase() !== params.templateLanguage.toLowerCase())) {
+    throw new BroadcastError('template_not_found', 'Approved template not found for this WhatsApp number and language. Refresh templates and try again.', 400);
+  }
 
   // Resolve each recipient to a contact. Invalid phones are dropped
   // (counted as rejected) rather than aborting the whole broadcast.
-  const resolved: { contactId: string; phone: string; params: string[] }[] = [];
-  let rejected = 0;
-  for (const r of recipients) {
+  const deduped: { phone: string; params: string[] }[] = [];
+  const recipientErrors: { index: number; phone: string; reason: string }[] = [];
+  const seenPhone = new Set<string>();
+  for (const [index, r] of recipients.entries()) {
     const sanitized = sanitizePhoneForMeta(typeof r.to === 'string' ? r.to : '');
     if (!isValidE164(sanitized)) {
-      rejected++;
+      recipientErrors.push({ index, phone: typeof r.to === 'string' ? r.to : '', reason: 'Invalid phone number; include the country code.' });
       continue;
     }
-    const { id } = await findOrCreateContact(db, accountId, auditUserId, {
-      phone: sanitized,
-    }, config.id);
-    resolved.push({
-      contactId: id,
+    if (seenPhone.has(sanitized)) {
+      recipientErrors.push({ index, phone: r.to, reason: 'Duplicate phone number.' });
+      continue;
+    }
+    seenPhone.add(sanitized);
+    deduped.push({
       phone: sanitized,
       params: Array.isArray(r.params)
         ? r.params.filter((p): p is string => typeof p === 'string')
@@ -192,18 +203,12 @@ export async function createBroadcast(
   // Keep the first occurrence so the contact is messaged once and its
   // params aren't silently overwritten by a later duplicate — and so
   // the row↔params pairing below (keyed by contact_id) is unambiguous.
-  const seenContact = new Set<string>();
-  const deduped = resolved.filter((r) => {
-    if (seenContact.has(r.contactId)) return false;
-    seenContact.add(r.contactId);
-    return true;
-  });
-
   if (deduped.length === 0) {
     throw new BroadcastError(
       'bad_request',
       'No recipients had a valid E.164 phone number',
-      400
+      400,
+      recipientErrors,
     );
   }
 
@@ -223,24 +228,22 @@ export async function createBroadcast(
   // delivery plan (issue #370). The function body is atomic, so a recipient
   // failure now rolls the parent back and nothing orphaned survives.
   const { data: createdRows, error: createErr } = await db.rpc(
-    'create_broadcast_idempotent',
+    'create_broadcast_with_contacts',
     {
       p_account_id: accountId,
       p_user_id: auditUserId,
       p_name: name || `API broadcast (${templateName})`,
       p_template_name: templateName,
       p_template_language: resolvedTemplate.language,
-      p_contact_ids: deduped.map((r) => r.contactId),
-      p_phones: deduped.map((r) => `+${r.phone}`),
-      // Frozen per-recipient params (migration 038) — without them a
-      // resume of this broadcast has no way to reconstruct {{1}}.
-      p_template_params: deduped.map((r) => r.params),
+      p_recipients: deduped,
       p_whatsapp_config_id: config.id ?? null,
       p_idempotency_key: params.idempotencyKey.trim(),
     }
   );
   if (createErr || !createdRows || createdRows.length === 0) {
-    if (createErr?.code === '23505') throw new BroadcastError('duplicate_launch', 'This idempotency key has already been used', 409);
+    if (createErr?.code === '23505' && /idx_broadcast_account_idempotency|idempotency_key/.test(`${createErr.message} ${createErr.details ?? ''}`)) {
+      throw new BroadcastError('duplicate_launch', 'This idempotency key has already been used', 409);
+    }
     console.error('[broadcast-core] create broadcast error:', createErr);
     throw new BroadcastError('internal', 'Failed to create broadcast', 500);
   }
@@ -249,10 +252,10 @@ export async function createBroadcast(
 
   // Pair each inserted recipient row back to its phone/params by
   // contact_id — unambiguous now that duplicates are collapsed.
-  const byContact = new Map(deduped.map((r) => [r.contactId, r]));
+  const byPhone = new Map(deduped.map((r) => [r.phone, r]));
   const planned: PlannedRecipient[] = createdRows.map(
-    (row: { recipient_id: string; contact_id: string }) => {
-      const r = byContact.get(row.contact_id)!;
+    (row: { recipient_id: string; phone: string }) => {
+      const r = byPhone.get(sanitizePhoneForMeta(row.phone))!;
       return { recipientRowId: row.recipient_id, phone: r.phone, params: r.params };
     }
   );
@@ -268,7 +271,8 @@ export async function createBroadcast(
     accessToken,
     templateRow,
     planned,
-    rejected,
+    rejected: recipientErrors.length,
+    recipientErrors,
   };
 }
 

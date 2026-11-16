@@ -101,7 +101,8 @@ export async function resolveTemplateRow(
     .eq('account_id', accountId)
     .eq('name', templateName);
   if (wabaId) query = query.eq('waba_id', wabaId);
-  const { data } = await query;
+  const { data, error } = await query;
+  if (error) throw new Error('Failed to load WhatsApp templates');
 
   // Sorted here rather than with `.order()` so the only query-builder
   // surface this helper depends on is select + eq — the same shape the

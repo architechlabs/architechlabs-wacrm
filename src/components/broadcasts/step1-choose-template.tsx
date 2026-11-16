@@ -19,6 +19,7 @@ const categoryColors: Record<string, string> = {
 };
 
 interface Step1Props {
+  whatsappConfigId: string | null;
   wabaId: string | null;
   selectedTemplate: MessageTemplate | null;
   onSelect: (template: MessageTemplate) => void;
@@ -26,13 +27,14 @@ interface Step1Props {
   onBack: () => void;
 }
 
-export function Step1ChooseTemplate({ wabaId, selectedTemplate, onSelect, onNext, onBack }: Step1Props) {
+export function Step1ChooseTemplate({ whatsappConfigId, wabaId, selectedTemplate, onSelect, onNext, onBack }: Step1Props) {
   const t = useTranslations('Broadcasts.wizard');
   const { accountId } = useAuth();
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -81,9 +83,26 @@ export function Step1ChooseTemplate({ wabaId, selectedTemplate, onSelect, onNext
     return () => controller.abort();
   }, [accountId, wabaId, refresh, t]);
 
-  function refreshTemplates() {
-    if (accountId && wabaId) templateCache.delete(`${accountId}:${wabaId}`);
-    setRefresh((value) => value + 1);
+  async function refreshTemplates() {
+    if (!whatsappConfigId || syncing) return;
+    setSyncing(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/whatsapp/templates/sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ whatsapp_config_id: whatsappConfigId }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success || result.truncated) {
+        const detail = Array.isArray(result.errors) ? result.errors.slice(0, 3).map((item: { name: string; language: string; message: string }) => `${item.name} (${item.language}): ${item.message}`).join('; ') : '';
+        throw new Error(result.error || detail || 'Template sync was incomplete. Please try again.');
+      }
+      if (accountId && wabaId) templateCache.delete(`${accountId}:${wabaId}`);
+      setRefresh((value) => value + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not sync templates from Meta.');
+    } finally { setSyncing(false); }
   }
 
   if (loading) {
@@ -98,7 +117,7 @@ export function Step1ChooseTemplate({ wabaId, selectedTemplate, onSelect, onNext
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-2">
         <p className="text-sm text-red-400">{error}</p>
-        <Button variant="outline" onClick={refreshTemplates}>Retry</Button>
+        <Button variant="outline" onClick={refreshTemplates} disabled={syncing || !whatsappConfigId}>{syncing ? 'Syncing…' : 'Retry sync'}</Button>
       </div>
     );
   }
@@ -111,7 +130,7 @@ export function Step1ChooseTemplate({ wabaId, selectedTemplate, onSelect, onNext
           {t('chooseTemplate.subtitle')}
         </p>
       </div>
-      <Button variant="outline" onClick={refreshTemplates}>Refresh templates</Button>
+      <Button variant="outline" onClick={refreshTemplates} disabled={syncing || !whatsappConfigId}>{syncing ? 'Syncing…' : 'Refresh templates'}</Button>
 
       {templates.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-border bg-card/50">

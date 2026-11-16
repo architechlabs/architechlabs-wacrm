@@ -23,6 +23,7 @@
 // ============================================================
 
 import { after } from 'next/server';
+import { NextResponse } from 'next/server';
 
 import { requireApiKey } from '@/lib/auth/api-context';
 
@@ -70,6 +71,7 @@ export async function POST(request: Request) {
       templateLanguage:
         typeof body.template_language === 'string'
           ? body.template_language
+          : typeof body.language === 'string' ? body.language
           : null,
       whatsappConfigId: typeof body.whatsapp_config_id === 'string' ? body.whatsapp_config_id : null,
       recipients: recipients.map((r) => ({
@@ -97,11 +99,13 @@ export async function POST(request: Request) {
         total_recipients: plan.planned.length,
         accepted: plan.planned.length,
         rejected: plan.rejected,
+        recipient_errors: plan.recipientErrors ?? [],
       },
       202
     );
   } catch (err) {
     if (err instanceof BroadcastError) {
+      if (err.recipientErrors) return NextResponse.json({ error: { code: err.code, message: err.message, recipient_errors: err.recipientErrors } }, { status: err.status });
       return fail(err.code, err.message, err.status);
     }
     if (err instanceof ContactError) {

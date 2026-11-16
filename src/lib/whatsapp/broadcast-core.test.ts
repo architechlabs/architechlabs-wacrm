@@ -51,7 +51,7 @@ describe('createBroadcast validation', () => {
 // Build a Supabase-shaped mock that gets createBroadcast past its config +
 // template lookups and into persistence. `rpcResult` is what the atomic
 // create_broadcast_with_recipients RPC returns.
-function makeDb(rpcResult: { data: unknown; error: unknown }) {
+function makeDb(rpcResult: { data: unknown; error: unknown }, hasTemplate = true) {
   const calls = {
     rpc: [] as { name: string; args: unknown }[],
     // Incremented if the OLD non-atomic path (a direct broadcasts /
@@ -66,7 +66,7 @@ function makeDb(rpcResult: { data: unknown; error: unknown }) {
             eq: () => ({
               single: () =>
                 Promise.resolve({
-                  data: { phone_number_id: 'pn-1', access_token: 'enc' },
+                  data: { id: 'line-1', waba_id: 'waba-1', phone_number_id: 'pn-1', access_token: 'enc' },
                   error: null,
                 }),
             }),
@@ -77,6 +77,7 @@ function makeDb(rpcResult: { data: unknown; error: unknown }) {
         const chain: Record<string, unknown> = {
           select: () => chain,
           eq: () => chain,
+          then: (resolve: (v: unknown) => void) => resolve({ data: hasTemplate ? [{ id: 'template', user_id: 'u', name: 'promo', language: 'en', status: 'APPROVED', body_text: 'Hello' }] : [], error: null }),
           maybeSingle: () => Promise.resolve({ data: null, error: null }),
         };
         return chain;
@@ -105,7 +106,7 @@ function makeDb(rpcResult: { data: unknown; error: unknown }) {
 describe('createBroadcast atomicity (#370)', () => {
   it('creates parent + recipients through the atomic RPC, never a bare parent insert', async () => {
     const { db, calls } = makeDb({
-      data: [{ broadcast_id: 'b-1', recipient_id: 'r-1', contact_id: 'c1' }],
+      data: [{ broadcast_id: 'b-1', recipient_id: 'r-1', phone: '+14155550123' }],
       error: null,
     });
 
@@ -116,12 +117,26 @@ describe('createBroadcast atomicity (#370)', () => {
     });
 
     expect(calls.rpc).toHaveLength(1);
-    expect(calls.rpc[0].name).toBe('create_broadcast_idempotent');
+    expect(calls.rpc[0].name).toBe('create_broadcast_with_contacts');
     expect(calls.usedDirectInsert).toBe(0);
     expect(plan.broadcastId).toBe('b-1');
     expect(plan.planned).toEqual([
       { recipientRowId: 'r-1', phone: '14155550123', params: [] },
     ]);
+  });
+
+  it('rejects a missing template before creating any contacts', async () => {
+    const { db, calls } = makeDb({ data: null, error: null }, false);
+    await expect(createBroadcast(db, 'acc', 'user', { idempotencyKey: 'k', templateName: 'promo', recipients: [{ to: '+14155550123' }] })).rejects.toMatchObject({ code: 'template_not_found', status: 400 });
+    expect(calls.rpc).toHaveLength(0);
+  });
+
+  it('returns invalid and duplicate recipients while preserving one normalized phone', async () => {
+    const { db, calls } = makeDb({ data: [{ broadcast_id: 'b', recipient_id: 'r', phone: '+14155550123' }], error: null });
+    const plan = await createBroadcast(db, 'acc', 'user', { idempotencyKey: 'k', templateName: 'promo', recipients: [{ to: '+1 415 555 0123', params: ['first'] }, { to: '14155550123', params: ['duplicate'] }, { to: 'bad' }] });
+    expect(plan.rejected).toBe(2);
+    expect(plan.recipientErrors?.map((error) => error.index)).toEqual([1, 2]);
+    expect(calls.rpc[0].args).toMatchObject({ p_recipients: [{ phone: '14155550123', params: ['first'] }] });
   });
 
   it('throws and leaves no orphaned parent when the atomic create fails', async () => {

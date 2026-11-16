@@ -12,6 +12,7 @@ describe('unanswered conversations', () => {
         CREATE TABLE messages (id uuid primary key default gen_random_uuid(), conversation_id uuid, sender_type text, status text, created_at timestamptz);
       `);
       await db.exec(await readFile('supabase/migrations/051_inbox_awaiting_reply.sql', 'utf8'));
+      await db.exec(await readFile('supabase/migrations/053_restore_inbox_awaiting_reply.sql', 'utf8'));
       await db.exec(`
         INSERT INTO conversations VALUES
           ('00000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001'),

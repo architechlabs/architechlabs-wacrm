@@ -208,6 +208,7 @@ export default function NewBroadcastPage() {
         >
           {currentStep === 0 && (
             <Step1ChooseTemplate
+              whatsappConfigId={whatsappConfigId}
               wabaId={selectedNumber?.waba_id ?? null}
               selectedTemplate={template}
               onSelect={setTemplate}

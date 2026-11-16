@@ -177,6 +177,10 @@ export async function POST(request: Request) {
     let pageCount = 0
 
     while (nextUrl && pageCount < PAGE_CAP) {
+      const next = new URL(nextUrl)
+      if (next.protocol !== 'https:' || next.hostname !== 'graph.facebook.com') {
+        return NextResponse.json({ error: 'Meta returned an invalid pagination URL.' }, { status: 502 })
+      }
       pageCount++
       const metaRes: Response = await fetch(nextUrl, {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -228,7 +232,6 @@ export async function POST(request: Request) {
         // route. account_id is NOT NULL on message_templates
         // post-017, so an INSERT without it errors.
         account_id: accountId,
-        user_id: userId,
         name: t.name,
         category: normalizeCategory(t.category),
         language: t.language,
@@ -241,6 +244,7 @@ export async function POST(request: Request) {
         sample_values: sampleValues,
         status: normalizeStatus(t.status),
         meta_template_id: t.id,
+        meta_components: t.components ?? [],
         quality_score: normalizeQualityScore(t.quality_score),
         waba_id: config.waba_id,
         updated_at: new Date().toISOString(),
@@ -250,6 +254,7 @@ export async function POST(request: Request) {
         .from('message_templates')
         .select('id')
         .eq('account_id', accountId)
+        .eq('waba_id', config.waba_id)
         .eq('name', t.name)
         .eq('language', t.language)
         .maybeSingle()
@@ -280,7 +285,7 @@ export async function POST(request: Request) {
       } else {
         const { error: insErr } = await supabase
           .from('message_templates')
-          .insert(row)
+          .insert({ ...row, user_id: userId })
         if (insErr) {
           errors.push({
             name: t.name,
