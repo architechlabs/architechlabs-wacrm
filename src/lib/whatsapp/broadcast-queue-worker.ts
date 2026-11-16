@@ -10,6 +10,20 @@ export interface BroadcastQueue { send(job: BroadcastJob, options?: { delaySecon
 export interface BroadcastQueueEnv { NEXT_PUBLIC_SUPABASE_URL: string; SUPABASE_SERVICE_ROLE_KEY: string; BROADCAST_QUEUE: BroadcastQueue }
 export interface BroadcastQueueMessage { body: unknown; ack(): void; retry(options?: { delaySeconds: number }): void }
 
+/** Never forward a Supabase service credential to a redirect target. */
+export function broadcastQueueFetch(deadline: number, fetcher: typeof fetch = fetch): typeof fetch {
+  return async (input, init) => {
+    const timeout = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    const response = await fetcher(input, { ...init, signal, redirect: 'manual' });
+    if ((response.status >= 300 && response.status < 400) || response.type === 'opaqueredirect') {
+      await response.body?.cancel();
+      throw new Error('Supabase redirect rejected');
+    }
+    return response;
+  };
+}
+
 function parseJob(value: unknown): BroadcastJob | null {
   if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
@@ -86,11 +100,7 @@ export async function processBroadcastQueue(batch: { messages: BroadcastQueueMes
   // if a claim times out it is treated as unknown and never sent again.
   const deadline = Date.now() + 19_000;
   const db = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-    global: { fetch: (input, init) => {
-      const timeout = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
-      const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-      return fetch(input, { ...init, signal, redirect: 'error' });
-    } },
+    global: { fetch: broadcastQueueFetch(deadline) },
   });
   for (const message of batch.messages) {
     const job = parseJob(message.body);

@@ -208,7 +208,7 @@ export async function POST(request: Request) {
 
     const response = await fetch(new URL('/api/v1/messages', origin), {
       method: 'POST',
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(20000),
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -232,7 +232,7 @@ export async function POST(request: Request) {
       }),
     });
 
-    if (!response.ok) {
+    if (!response.ok || response.type === 'opaqueredirect') {
       console.error('[razorpay-webhook] WhatsApp API request failed', {
         status: response.status,
       });

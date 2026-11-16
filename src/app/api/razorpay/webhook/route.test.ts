@@ -179,6 +179,15 @@ describe('POST /api/razorpay/webhook', () => {
     expect(state.updates).toHaveLength(1);
   });
 
+  it('rejects a redirect without forwarding the API credential', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://untrusted.example/' } }));
+    const response = await POST(requestFor(settlementBody, { eventId: 'evt_redirect' }));
+    expect(response.status).toBe(502);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][1]).toMatchObject({ redirect: 'manual' });
+    expect(state.deletes).toEqual(['evt_redirect']);
+  });
+
   it('returns 502 and releases the event claim when the WhatsApp API fails', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 500 }));
 

@@ -447,14 +447,14 @@ export async function sendTemplateMessage(
   const response = await fetch(url, {
     method: 'POST',
     signal,
-    ...(signal ? { redirect: 'error' as const } : {}),
+    redirect: 'manual',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
   })
-  if (!response.ok) {
+  if (!response.ok || response.type === 'opaqueredirect') {
     await throwMetaError(response, `Meta API error: ${response.status}`)
   }
   const data = await response.json()
