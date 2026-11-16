@@ -7,20 +7,20 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from '@/components/ui/select';
 import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import type { SavedWhatsAppConfig } from '@/lib/settings/read-whatsapp-config';
 import { cn } from '@/lib/utils';
+import { formatDisplayPhone } from '@/lib/whatsapp/phone-utils';
 
 function lineTitle(row: SavedWhatsAppConfig) {
-  return row.display_phone_number || row.verified_name || row.phone_number_id;
+  return row.display_phone_number ? formatDisplayPhone(row.display_phone_number) : row.verified_name || row.phone_number_id;
 }
 
 function lineSubtitle(row: SavedWhatsAppConfig) {
   if (row.verified_name && row.display_phone_number) return row.verified_name;
   if (row.verified_name && !row.display_phone_number) return null;
-  return row.waba_id ? `WABA ${row.waba_id.slice(-6)}` : null;
+  return null;
 }
 
 type Variant = 'sidebar' | 'compact';
@@ -73,7 +73,7 @@ export function WhatsAppNumberSelect({ variant = 'sidebar' }: { variant?: Varian
             </span>
             <span className="min-w-0 flex-1 text-left">
               <span className="block truncate text-sm font-medium leading-tight text-foreground">
-                <SelectValue placeholder={lineTitle(selected)} />
+                {lineTitle(selected)}
               </span>
               {!compact && lineSubtitle(selected) ? (
                 <span className="mt-0.5 block truncate text-xs text-muted-foreground">

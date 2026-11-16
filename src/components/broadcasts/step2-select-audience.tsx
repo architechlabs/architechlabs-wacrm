@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
+import { parseContactCsv } from '@/lib/contacts/parse-contact-csv';
+import { isValidE164, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 
 type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -93,6 +95,36 @@ export function Step2SelectAudience({
   const [loadingFields, setLoadingFields] = useState(false);
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
+  const [csvSummary, setCsvSummary] = useState<{ invalid: number; duplicates: number } | null>(null);
+  const [csvError, setCsvError] = useState<string | null>(null);
+
+  async function loadCsv(file: File | undefined) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (!text.split(/\r?\n/, 1)[0].split(',').some((header) => header.trim().replace(/^["']|["']$/g, '').toLowerCase() === 'phone')) {
+        throw new Error('The CSV must contain a phone column.');
+      }
+      const parsed = parseContactCsv(text);
+      let invalid = parsed.missingPhoneCount;
+      let duplicates = 0;
+      const unique = new Map<string, { phone: string; name?: string }>();
+      for (const row of parsed.rows) {
+        const digits = sanitizePhoneForMeta(row.phone);
+        if (!isValidE164(digits)) { invalid++; continue; }
+        const phone = `+${digits}`;
+        if (unique.has(phone)) { duplicates++; continue; }
+        unique.set(phone, { phone, name: row.name });
+      }
+      onUpdate({ ...audience, csvContacts: [...unique.values()] });
+      setCsvSummary({ invalid, duplicates });
+      setCsvError(null);
+    } catch (error) {
+      onUpdate({ ...audience, csvContacts: [] });
+      setCsvSummary(null);
+      setCsvError(error instanceof Error ? error.message : 'Could not read the CSV file.');
+    }
+  }
 
   // Tags are used both by the primary "Filter by Tags" audience type
   // AND by the exclude-list below — so always load once on mount.
@@ -308,6 +340,16 @@ export function Step2SelectAudience({
           );
         })}
       </div>
+
+      {audience.type === 'csv' && (
+        <div className="space-y-2 rounded-xl border border-border bg-card/50 p-4">
+          <label htmlFor="broadcast-csv" className="block text-sm font-medium text-foreground">Upload CSV</label>
+          <input id="broadcast-csv" type="file" accept=".csv,text/csv" onChange={(event) => void loadCsv(event.target.files?.[0])} className="block w-full text-sm text-muted-foreground" />
+          <p className="text-xs text-muted-foreground">Include a phone column with country codes; name is optional.</p>
+          {csvSummary && <p className="text-sm text-muted-foreground">{audience.csvContacts?.length ?? 0} valid · {csvSummary.invalid} invalid · {csvSummary.duplicates} duplicates removed</p>}
+          {csvError && <p role="alert" className="text-sm text-red-400">{csvError}</p>}
+        </div>
+      )}
 
       {audience.type === 'tags' && (
         <div className="rounded-xl border border-border bg-card/50 p-4">

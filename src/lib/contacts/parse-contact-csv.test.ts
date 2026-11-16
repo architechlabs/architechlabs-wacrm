@@ -31,6 +31,7 @@ describe('parseContactCsv', () => {
 +15559876543,Bob,Customer`;
 
     expect(parseContactCsv(csv)).toEqual({
+      missingPhoneCount: 0,
       hasTagsColumn: true,
       hasCompanyColumn: false,
       rows: [
@@ -57,6 +58,7 @@ describe('parseContactCsv', () => {
 +15551234567,Alice`;
 
     expect(parseContactCsv(csv)).toEqual({
+      missingPhoneCount: 0,
       hasTagsColumn: false,
       hasCompanyColumn: false,
       rows: [

@@ -96,7 +96,7 @@ export default function BroadcastsPage() {
 
   useEffect(() => {
     fetchBroadcasts();
-  }, []);
+  }, [lineReady, whatsappConfigId]);
 
   const anySending = useMemo(
     () => broadcasts.some((b) => b.status === 'sending'),

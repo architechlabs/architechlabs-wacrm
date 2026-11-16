@@ -254,20 +254,22 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       if (row.phone) uniqueByPhone.set(row.phone, row);
     }
     const phones = [...uniqueByPhone.keys()];
+    if (!whatsappConfigId) throw new Error('Select a WhatsApp number first.');
 
     // Single round-trip lookup of existing contacts by phone.
     const { data: existing, error: lookupErr } = await supabase
       .from('contacts')
       .select('*')
-      .eq('user_id', user.id)
-      .in('phone', phones);
+      .eq('account_id', accountId)
+      .eq('whatsapp_config_id', whatsappConfigId ?? '')
+      .in('phone', phones.flatMap((phone) => [phone, phone.replace(/^\+/, '')]));
     if (lookupErr) {
       throw new Error(`Failed to look up CSV contacts: ${lookupErr.message}`);
     }
 
     const byPhone = new Map<string, Contact>();
     for (const c of (existing ?? []) as Contact[]) {
-      if (c.phone) byPhone.set(c.phone, c);
+      if (c.phone) byPhone.set(`+${c.phone.replace(/\D/g, '')}`, c);
     }
 
     // Insert only missing contacts, in one batch per 200 rows (PostgREST
@@ -277,6 +279,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       .map((phone) => ({
         user_id: user.id,
         account_id: accountId,
+        whatsapp_config_id: whatsappConfigId,
         phone,
         name: uniqueByPhone.get(phone)?.name ?? null,
       }));
@@ -292,7 +295,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         throw new Error(`Failed to create CSV contacts: ${insertErr.message}`);
       }
       for (const c of (inserted ?? []) as Contact[]) {
-        if (c.phone) byPhone.set(c.phone, c);
+        if (c.phone) byPhone.set(`+${c.phone.replace(/\D/g, '')}`, c);
       }
     }
 
@@ -373,6 +376,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         .insert({
           user_id: user.id,
           account_id: accountId,
+          whatsapp_config_id: whatsappConfigId,
           name: payload.name,
           template_name: payload.template.name,
           template_language: payload.template.language ?? 'en_US',

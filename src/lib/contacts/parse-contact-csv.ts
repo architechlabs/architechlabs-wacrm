@@ -33,6 +33,7 @@ export function parseTagCell(value: string | undefined): string[] {
 
 export interface ParseContactCsvResult {
   rows: ParsedContactRow[];
+  missingPhoneCount: number;
   /** True when the CSV header includes a `tags` column. */
   hasTagsColumn: boolean;
   /** True when the CSV header includes a `company` column. */
@@ -42,7 +43,7 @@ export interface ParseContactCsvResult {
 export function parseContactCsv(text: string): ParseContactCsvResult {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) {
-    return { rows: [], hasTagsColumn: false, hasCompanyColumn: false };
+    return { rows: [], missingPhoneCount: 0, hasTagsColumn: false, hasCompanyColumn: false };
   }
 
   const headers = lines[0]
@@ -51,7 +52,7 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
 
   const phoneIdx = headers.indexOf('phone');
   if (phoneIdx === -1) {
-    return { rows: [], hasTagsColumn: false, hasCompanyColumn: false };
+    return { rows: [], missingPhoneCount: 0, hasTagsColumn: false, hasCompanyColumn: false };
   }
 
   const nameIdx = headers.indexOf('name');
@@ -60,6 +61,7 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
   const tagsIdx = headers.indexOf('tags');
 
   const rows: ParsedContactRow[] = [];
+  let missingPhoneCount = 0;
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -67,7 +69,7 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
 
     const values = parseCsvLine(line);
     const phone = values[phoneIdx]?.replace(/["']/g, '').trim();
-    if (!phone) continue;
+    if (!phone) { missingPhoneCount++; continue; }
 
     rows.push({
       phone,
@@ -90,6 +92,7 @@ export function parseContactCsv(text: string): ParseContactCsvResult {
 
   return {
     rows,
+    missingPhoneCount,
     hasTagsColumn: tagsIdx >= 0,
     hasCompanyColumn: companyIdx >= 0,
   };
