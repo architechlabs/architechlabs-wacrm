@@ -15,7 +15,6 @@ import {
   X,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { parseContactCsv } from '@/lib/contacts/parse-contact-csv';
 import { isValidE164, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
 
@@ -37,6 +36,7 @@ interface AudienceConfig {
 }
 
 interface Step2Props {
+  whatsappConfigId: string | null;
   audience: AudienceConfig;
   onUpdate: (audience: AudienceConfig) => void;
   onNext: () => void;
@@ -44,13 +44,13 @@ interface Step2Props {
 }
 
 export function Step2SelectAudience({
+  whatsappConfigId,
   audience,
   onUpdate,
   onNext,
   onBack,
 }: Step2Props) {
   const t = useTranslations('Broadcasts.wizard');
-  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
 
   const OPERATOR_OPTIONS = useMemo<{ value: CustomFieldOperator; label: string }[]>(() => [
     { value: 'is', label: t('selectAudience.operatorIs') },

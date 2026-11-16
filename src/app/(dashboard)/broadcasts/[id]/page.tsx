@@ -606,7 +606,7 @@ export default function BroadcastDetailPage() {
                         <span
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${rStatus.classes}`}
                         >
-                          {tStatus(rStatus.label)}
+                          {recipient.delivery_outcome === 'skipped_opt_out' ? 'Skipped · opted out' : tStatus(rStatus.label)}
                         </span>
                       </TableCell>
                       <TableCell className="text-muted-foreground">

@@ -324,7 +324,7 @@ async function handleCoexistenceChange(
 
   if (field === 'smb_message_echoes') {
     const echoes = dedupeIncomingMessages(
-      ((value.message_echoes as Array<{ id?: string; to?: string; timestamp?: string; type?: string; text?: { body?: string } }>) ?? []),
+      ((value.message_echoes as Array<WhatsAppMessage & { to?: string }>) ?? []),
       [],
     )
     for (const echo of echoes) {
@@ -339,6 +339,7 @@ async function handleCoexistenceChange(
         timestamp: echo.timestamp,
         type: echo.type || 'text',
         text: echo.text?.body ?? null,
+        rawMessage: echo,
         direction: 'outbound',
       })
     }
@@ -358,6 +359,7 @@ async function handleCoexistenceChange(
           timestamp: message.timestamp,
           type: message.type || 'text',
           text: message.text?.body ?? null,
+          rawMessage: message as WhatsAppMessage,
           direction: historyDirection(message.from, thread.id),
         })
       }
@@ -374,6 +376,7 @@ async function storeLineMessage(args: {
   timestamp?: string
   type: string
   text: string | null
+  rawMessage?: WhatsAppMessage
   direction: 'inbound' | 'outbound'
 }) {
   const contactOutcome = await findOrCreateContact(
@@ -407,12 +410,13 @@ async function storeLineMessage(args: {
       : allowed.has(args.type)
         ? args.type
         : 'unsupported'
+  const parsed = args.rawMessage ? await parseMessageContent(args.rawMessage, args.accessToken, args.config.mirror_inbound_media ? { accountId: args.config.account_id } : null) : null
   const contentText = contentType === 'unsupported'
     ? UNSUPPORTED_MESSAGE_LABEL
-    : args.text
-  const createdAt = args.timestamp
-    ? new Date(parseInt(args.timestamp, 10) * 1000).toISOString()
-    : new Date().toISOString()
+    : parsed?.contentText ?? args.text
+  const eventTime = Number(args.timestamp) * 1000
+  const createdAt = Number.isFinite(eventTime) && eventTime > 0
+    ? new Date(eventTime).toISOString() : new Date().toISOString()
 
   const { error } = await supabaseAdmin()
     .from('messages')
@@ -422,6 +426,8 @@ async function storeLineMessage(args: {
         sender_type: args.direction === 'inbound' ? 'customer' : 'agent',
         content_type: contentType,
         content_text: contentText,
+        media_url: parsed?.mediaUrl ?? null,
+        media_type: parsed?.mediaType ?? null,
         message_id: args.messageId,
         status: 'delivered',
         created_at: createdAt,
@@ -441,6 +447,7 @@ async function storeLineMessage(args: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', convResult.conversation.id)
+    .or(`last_message_at.is.null,last_message_at.lte.${createdAt}`)
 }
 
 async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
@@ -601,7 +608,7 @@ async function handleStatusUpdate(status: {
 
   const { data: recipient, error: recFetchErr } = await supabaseAdmin()
     .from('broadcast_recipients')
-    .select('id, status')
+    .select('id, status, broadcast_id')
     .eq('whatsapp_message_id', status.id)
     .maybeSingle()
 
@@ -614,6 +621,13 @@ async function handleStatusUpdate(status: {
     isValidStatusTransition(recipient.status, status.status)
   ) {
     const update: Record<string, unknown> = { status: status.status }
+    if (status.status === 'failed') {
+      const failure = extractFailureDetails(status.errors)
+      if (failure) {
+        update.error_code = failure.failureCode
+        update.error_message = failure.failureReason
+      }
+    }
     if (status.status === 'sent' && !('sent_at' in update)) update.sent_at = tsIso
     if (status.status === 'delivered') update.delivered_at = tsIso
     if (status.status === 'read') update.read_at = tsIso
@@ -625,6 +639,14 @@ async function handleStatusUpdate(status: {
 
     if (recUpdateErr) {
       console.error('Error updating broadcast recipient status:', recUpdateErr)
+    }
+    if (status.status === 'failed' && recipient.broadcast_id) {
+      const code = extractFailureDetails(status.errors)?.failureCode
+      if (code && [131048, 131056, 130429, 131049].includes(code)) {
+        await supabaseAdmin().from('broadcasts')
+          .update({ delivery_paused_at: new Date().toISOString() })
+          .eq('id', recipient.broadcast_id)
+      }
     }
   }
 
@@ -1345,7 +1367,7 @@ async function findOrCreateContact(
 
   if (existingContact) {
     // Update name if it changed
-    if (name && name !== existingContact.name) {
+    if (name && name !== existingContact.name && normalizePhone(name) !== normalizePhone(phone)) {
       await supabaseAdmin()
         .from('contacts')
         .update({ name, updated_at: new Date().toISOString() })

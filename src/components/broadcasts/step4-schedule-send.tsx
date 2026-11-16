@@ -24,6 +24,8 @@ interface AudienceConfig {
 }
 
 interface Step4Props {
+  whatsappConfigId: string | null;
+  senderLabel: string;
   name: string;
   onNameChange: (name: string) => void;
   template: MessageTemplate;
@@ -36,6 +38,8 @@ interface Step4Props {
 }
 
 export function Step4ScheduleSend({
+  whatsappConfigId,
+  senderLabel,
   name,
   onNameChange,
   template,
@@ -60,7 +64,8 @@ export function Step4ScheduleSend({
         if (audience.type === 'all') {
           const { count } = await supabase
             .from('contacts')
-            .select('*', { count: 'exact', head: true });
+            .select('*', { count: 'exact', head: true })
+            .eq('whatsapp_config_id', whatsappConfigId ?? '');
           setEstimatedReach(count ?? 0);
         } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
           const { data: contactTags } = await supabase
@@ -81,7 +86,7 @@ export function Step4ScheduleSend({
     }
 
     calculateReach();
-  }, [audience]);
+  }, [audience, whatsappConfigId]);
 
   const audienceLabel =
     audience.type === 'all'
@@ -115,6 +120,7 @@ export function Step4ScheduleSend({
       {/* Summary Card */}
       <div className="rounded-xl border border-border bg-card/50 p-4 space-y-3">
         <p className="text-sm font-medium text-foreground">{t('scheduleSend.summary')}</p>
+        <p className="text-sm text-foreground">Sending from {senderLabel}{!loadingReach && audience.type !== 'custom_field' ? ` to approximately ${estimatedReach.toLocaleString()} recipients` : ''}</p>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
             <p className="text-xs text-muted-foreground">{t('scheduleSend.template')}</p>
@@ -203,6 +209,7 @@ export function Step4ScheduleSend({
             <DialogHeader>
               <DialogTitle className="text-popover-foreground">Confirm Broadcast</DialogTitle>
               <DialogDescription className="text-muted-foreground">
+                Sending from {senderLabel}.{' '}
                 You are about to send this broadcast to{' '}
                 <span className="font-medium text-popover-foreground">{estimatedReach.toLocaleString()}</span>{' '}
                 contacts using the{' '}

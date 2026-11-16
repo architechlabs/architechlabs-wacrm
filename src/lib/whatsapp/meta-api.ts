@@ -31,15 +31,24 @@ interface MetaErrorResponse {
   error?: { message?: string; code?: number; type?: string }
 }
 
+export class MetaApiError extends Error {
+  constructor(message: string, readonly code?: number) {
+    super(message)
+    this.name = 'MetaApiError'
+  }
+}
+
 async function throwMetaError(response: Response, fallback: string): Promise<never> {
   let message = fallback
+  let code: number | undefined
   try {
     const data = (await response.json()) as MetaErrorResponse
     if (data.error?.message) message = data.error.message
+    if (typeof data.error?.code === 'number') code = data.error.code
   } catch {
     // response body wasn't JSON — keep the fallback
   }
-  throw new Error(message)
+  throw new MetaApiError(message, code)
 }
 
 // ============================================================

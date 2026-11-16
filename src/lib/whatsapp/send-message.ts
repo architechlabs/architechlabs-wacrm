@@ -392,7 +392,8 @@ export async function sendMessageToConversation(
       db,
       accountId,
       templateName,
-      templateLanguage
+      templateLanguage,
+      config.waba_id,
     );
     if (resolved.malformed) {
       throw new SendMessageError(

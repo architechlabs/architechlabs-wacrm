@@ -325,7 +325,7 @@ export function MessageThread({
       try {
         const { data, error } = await readWithTimeout(signal => supabase
           .from("messages")
-          .select("*")
+          .select("*, broadcast:broadcasts(name)")
           .eq("conversation_id", conversationId)
           .order("created_at", { ascending: true })
           .abortSignal(signal), controller.signal);

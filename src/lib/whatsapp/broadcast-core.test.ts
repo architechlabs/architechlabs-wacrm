@@ -110,12 +110,13 @@ describe('createBroadcast atomicity (#370)', () => {
     });
 
     const plan = await createBroadcast(db, 'acc', 'user', {
+      idempotencyKey: 'launch-1',
       templateName: 'promo',
       recipients: [{ to: '+14155550123' }],
     });
 
     expect(calls.rpc).toHaveLength(1);
-    expect(calls.rpc[0].name).toBe('create_broadcast_with_recipients');
+    expect(calls.rpc[0].name).toBe('create_broadcast_idempotent');
     expect(calls.usedDirectInsert).toBe(0);
     expect(plan.broadcastId).toBe('b-1');
     expect(plan.planned).toEqual([
@@ -131,6 +132,7 @@ describe('createBroadcast atomicity (#370)', () => {
 
     await expect(
       createBroadcast(db, 'acc', 'user', {
+        idempotencyKey: 'launch-2',
         templateName: 'promo',
         recipients: [{ to: '+14155550123' }],
       })

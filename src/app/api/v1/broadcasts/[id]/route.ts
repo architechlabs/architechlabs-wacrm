@@ -22,7 +22,7 @@ export async function GET(
     const { data, error } = await ctx.supabase
       .from('broadcasts')
       .select(
-        'id, name, template_name, template_language, status, total_recipients, sent_count, delivered_count, read_count, replied_count, failed_count, created_at, updated_at'
+        'id, name, template_name, template_language, status, total_recipients, sent_count, delivered_count, read_count, replied_count, failed_count, delivery_paused_at, delivery_locked_at, created_at, updated_at'
       )
       .eq('id', id)
       .eq('account_id', ctx.accountId)
@@ -34,7 +34,15 @@ export async function GET(
     }
     if (!data) return fail('not_found', 'Broadcast not found', 404);
 
-    return ok(data);
+    const { count: pending, error: pendingError } = await ctx.supabase.from('broadcast_recipients')
+      .select('id', { count: 'exact', head: true }).eq('broadcast_id', id).eq('status', 'pending')
+      .is('send_started_at', null).is('whatsapp_message_id', null);
+    if (pendingError) return fail('internal', 'Failed to read pending recipients', 500);
+    const { count: uncertain, error: uncertainError } = await ctx.supabase.from('broadcast_recipients')
+      .select('id', { count: 'exact', head: true }).eq('broadcast_id', id).eq('status', 'pending')
+      .not('send_started_at', 'is', null).is('whatsapp_message_id', null);
+    if (uncertainError) return fail('internal', 'Failed to read in-progress recipients', 500);
+    return ok({ ...data, pending_count: pending ?? 0, in_progress_or_unknown_count: uncertain ?? 0 });
   } catch (err) {
     return toApiErrorResponse(err);
   }

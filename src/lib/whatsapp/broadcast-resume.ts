@@ -41,7 +41,7 @@ export const RESUME_SCOPES: readonly ResumeScope[] = [
  * many, so the UI can offer Resume again. Matches the public API's
  * per-request recipient cap.
  */
-export const RESUME_MAX_PER_REQUEST = 1000;
+export const RESUME_MAX_PER_REQUEST = 10;
 
 /**
  * How long a `delivery_locked_at` stamp is honoured before it is read
@@ -147,13 +147,16 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, template_name, template_language, whatsapp_config_id')
+    .select('id, template_name, template_language, whatsapp_config_id, delivery_paused_at')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
 
   if (bcError || !broadcast) {
     throw new BroadcastError('not_found', 'Broadcast not found', 404);
+  }
+  if (broadcast.delivery_paused_at) {
+    throw new BroadcastError('broadcast_paused', 'Broadcast is paused after a Meta limit or quality error', 409);
   }
 
   const statuses = scopeStatuses(scope);
@@ -162,6 +165,8 @@ export async function planBroadcastResume(
     .select('id, template_params, contact:contacts(phone)')
     .eq('broadcast_id', broadcastId)
     .in('status', statuses)
+    .is('send_started_at', null)
+    .is('whatsapp_message_id', null)
     // Oldest first, so repeated capped passes chew through the backlog
     // in a stable order instead of re-picking the same slice.
     .order('created_at', { ascending: true });
@@ -234,7 +239,8 @@ export async function planBroadcastResume(
     db,
     accountId,
     broadcast.template_name,
-    broadcast.template_language
+    broadcast.template_language,
+    config.waba_id,
   );
   if (resolvedTemplate.malformed) {
     throw new BroadcastError(
@@ -245,6 +251,9 @@ export async function planBroadcastResume(
   }
 
   const plan: BroadcastPlan = {
+    accountId,
+    auditUserId: config.user_id,
+    configId: config.id,
     broadcastId,
     templateName: broadcast.template_name,
     templateLanguage: resolvedTemplate.language,

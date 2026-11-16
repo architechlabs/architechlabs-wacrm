@@ -224,11 +224,18 @@ first (`404` otherwise).
 Launch a template broadcast to a list of recipients. Scope:
 `broadcasts:send`. The broadcast + its recipient rows are persisted
 immediately and the sends fan out in the background, so the call
-returns fast — poll `GET /api/v1/broadcasts/{id}` for progress.
+returns fast, and the CRM automatically continues through short batches. An
+optional `Idempotency-Key` prevents repeated launches with the same key. Poll
+`GET /api/v1/broadcasts/{id}` for progress. If delivery stops
+with pending recipients, `POST /api/v1/broadcasts/{id}/continue` processes a
+bounded batch. Do not continue a paused campaign. A nonzero
+`in_progress_or_unknown_count` after the lock clears requires manual review:
+the Meta result may be unknown and those recipients are never auto-retried.
 
 ```bash
 curl -X POST https://your-crm.example.com/api/v1/broadcasts \
   -H "Authorization: Bearer wacrm_live_xxx" \
+  -H "Idempotency-Key: unique-campaign-id" \
   -H "Content-Type: application/json" \
   -d '{
         "name": "July promo",

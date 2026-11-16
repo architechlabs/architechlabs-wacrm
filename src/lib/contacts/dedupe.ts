@@ -45,13 +45,15 @@ export async function findExistingContact(
 
   let query = db.from("contacts").select("*").eq("account_id", accountId);
   if (whatsappConfigId) query = query.eq("whatsapp_config_id", whatsappConfigId);
-  const { data, error } = await query.like("phone", `%${suffix}`);
+  const { data, error } = await query.like("phone_normalized", `%${suffix}`);
 
   if (error || !data) return null;
 
-  return (
-    (data as ExistingContact[]).find((c) => phonesMatch(c.phone, phone)) ?? null
-  );
+  const candidates = data as ExistingContact[];
+  const exact = candidates.find((contact) => normalizePhone(contact.phone) === normalized);
+  if (exact) return exact;
+  const matches = candidates.filter((contact) => phonesMatch(contact.phone, phone));
+  return matches.length === 1 ? matches[0] : null;
 }
 
 /**

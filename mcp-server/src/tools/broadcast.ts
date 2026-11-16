@@ -25,6 +25,7 @@ export function registerBroadcastTools(server: McpServer, client: WacrmClient): 
         name: z.string().describe('A name for this broadcast campaign (for your own reference).'),
         template_name: z.string().describe('Meta-approved template name.'),
         template_language: z.string().describe('Template language code, e.g. "en_US".'),
+        idempotency_key: z.string().min(1).max(200).optional().describe('Optional stable key for preventing a repeated launch.'),
         recipients: z
           .array(
             z.object({
@@ -49,7 +50,7 @@ export function registerBroadcastTools(server: McpServer, client: WacrmClient): 
         openWorldHint: true,
       },
     },
-    handle(async ({ confirm, ...body }) => {
+    handle(async ({ confirm, idempotency_key, ...body }) => {
       if (confirm !== true) {
         return errorResult(
           'Refusing to send: confirm must be true. This launches a mass broadcast to ' +
@@ -57,7 +58,13 @@ export function registerBroadcastTools(server: McpServer, client: WacrmClient): 
             'with the user, then call again with confirm=true.',
         );
       }
-      return jsonResult(await client.sendBroadcast(body));
+      return jsonResult(await client.sendBroadcast(body, idempotency_key));
     }),
   );
+  server.registerTool('continue_broadcast', {
+    title: 'Continue broadcast',
+    description: 'Send the next bounded batch of an already approved broadcast. Check get_broadcast first; do not continue a paused campaign.',
+    inputSchema: { id: z.string().describe('Broadcast id.') },
+    annotations: { title: 'Continue broadcast', readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  }, handle(async ({ id }) => jsonResult(await client.continueBroadcast(id))));
 }

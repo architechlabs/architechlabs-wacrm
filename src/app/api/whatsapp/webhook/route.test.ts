@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
     automationCompleted: 0,
     /** whatsapp_config.mirror_inbound_media for the matched row (#466). */
     mirrorInboundMedia: true as boolean | undefined,
+    configId: undefined as string | undefined,
     /** Objects the inbound-media mirror pushed into chat-media. */
     storageUploads: [] as {
       bucket: string
@@ -60,6 +61,7 @@ vi.mock('@supabase/supabase-js', () => ({
                 Promise.resolve({
                   data: [
                     {
+                      id: h.state.configId,
                       account_id: 'acc-1',
                       user_id: 'user-1',
                       access_token: 'enc',
@@ -76,6 +78,9 @@ vi.mock('@supabase/supabase-js', () => ({
             select: () => ({
               eq: () => ({
                 eq: () => ({
+                  eq: () => ({
+                    order: () => ({ limit: () => Promise.resolve({ data: [h.state.conversation], error: null }) }),
+                  }),
                   order: () => ({
                     limit: () =>
                       Promise.resolve({
@@ -86,12 +91,13 @@ vi.mock('@supabase/supabase-js', () => ({
                 }),
               }),
             }),
+            update: () => ({ eq: () => ({ or: () => Promise.resolve({ error: null }) }) }),
           }
         case 'broadcast_recipients':
           // flagBroadcastReplyIfAny: select().eq().eq().in().order().limit()
           return {
             select: (columns: string) =>
-              columns === 'id, status'
+              columns === 'id, status, broadcast_id'
                 ? {
                     eq: () => ({
                       maybeSingle: () =>
@@ -134,6 +140,8 @@ vi.mock('@supabase/supabase-js', () => ({
                         }),
                     }),
                   }
+                : columns === 'message_id'
+                  ? { eq: () => ({ in: () => Promise.resolve({ data: [], error: null }) }) }
                 : columns ===
                     'conversation_id, conversations(account_id)'
                   ? {
@@ -274,6 +282,20 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
   } as unknown as Request
 }
 
+describe('phone-app outgoing echoes', () => {
+  it('stores an outgoing text message in the sender number conversation', async () => {
+    h.state.configId = 'line-1'
+    const body = { entry: [{ changes: [{ field: 'smb_message_echoes', value: {
+      metadata: { phone_number_id: 'pn-1' },
+      message_echoes: [{ id: 'wamid.echo', to: '15551230000', timestamp: '1700000000', type: 'text', text: { body: 'Hello from the phone' } }],
+    } }] }] }
+    const req = { text: async () => JSON.stringify(body), headers: { get: () => 'sha256=stub' } } as unknown as Request
+    await POST(req)
+    for (const callback of h.state.afterCallbacks) await callback()
+    expect(h.state.upsertCalls).toContainEqual(expect.objectContaining({ row: expect.objectContaining({ conversation_id: 'conv-1', sender_type: 'agent', content_text: 'Hello from the phone', message_id: 'wamid.echo' }) }))
+  })
+})
+
 function statusRequest(
   status = 'delivered',
   errors?: Array<Record<string, unknown>>,
@@ -335,6 +357,7 @@ beforeEach(() => {
   h.state.automationStarted = 0
   h.state.automationCompleted = 0
   h.state.mirrorInboundMedia = true
+  h.state.configId = undefined
   h.state.storageUploads = []
   h.state.storageUploadError = null
   h.state.messageStatusUpdates = []

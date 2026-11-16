@@ -6,6 +6,11 @@ import { MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Loader2, FileText, ArrowRight } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { useAuth } from '@/hooks/use-auth';
+import { readWithTimeout } from '@/lib/http/read-with-timeout';
+
+const templateCache = new Map<string, { expires: number; templates: MessageTemplate[] }>();
+const CACHE_TTL_MS = 60_000;
 
 const categoryColors: Record<string, string> = {
   Marketing: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
@@ -14,42 +19,72 @@ const categoryColors: Record<string, string> = {
 };
 
 interface Step1Props {
+  wabaId: string | null;
   selectedTemplate: MessageTemplate | null;
   onSelect: (template: MessageTemplate) => void;
   onNext: () => void;
   onBack: () => void;
 }
 
-export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack }: Step1Props) {
+export function Step1ChooseTemplate({ wabaId, selectedTemplate, onSelect, onNext, onBack }: Step1Props) {
   const t = useTranslations('Broadcasts.wizard');
+  const { accountId } = useAuth();
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
+    const controller = new AbortController();
     async function fetchTemplates() {
+      if (!accountId || !wabaId) {
+        setTemplates([]);
+        setLoading(false);
+        return;
+      }
+      const cacheKey = `${accountId}:${wabaId}`;
+      const cached = templateCache.get(cacheKey);
+      if (cached && cached.expires > Date.now()) {
+        setTemplates(cached.templates);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
       try {
         const supabase = createClient();
         // Only APPROVED templates can be sent via Meta — anything else
         // would 400 at broadcast time. Hide them rather than letting
         // the user pick a template that will fail.
-        const { data, error: fetchError } = await supabase
+        const { data, error: fetchError } = await readWithTimeout((signal) => supabase
           .from('message_templates')
           .select('*')
+          .eq('account_id', accountId)
+          .eq('waba_id', wabaId)
           .eq('status', 'APPROVED')
-          .order('created_at', { ascending: false });
+          .order('created_at', { ascending: false })
+          .abortSignal(signal), controller.signal);
 
         if (fetchError) throw fetchError;
+        if (controller.signal.aborted) return;
+        templateCache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, templates: data ?? [] });
         setTemplates(data ?? []);
       } catch (err) {
-        setError(err instanceof Error ? err.message : t('chooseTemplate.errorLoad'));
+        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : t('chooseTemplate.errorLoad'));
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }
 
     fetchTemplates();
-  }, []);
+    return () => controller.abort();
+  }, [accountId, wabaId, refresh, t]);
+
+  function refreshTemplates() {
+    if (accountId && wabaId) templateCache.delete(`${accountId}:${wabaId}`);
+    setRefresh((value) => value + 1);
+  }
 
   if (loading) {
     return (
@@ -63,6 +98,7 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-2">
         <p className="text-sm text-red-400">{error}</p>
+        <Button variant="outline" onClick={refreshTemplates}>Retry</Button>
       </div>
     );
   }
@@ -75,6 +111,7 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
           {t('chooseTemplate.subtitle')}
         </p>
       </div>
+      <Button variant="outline" onClick={refreshTemplates}>Refresh templates</Button>
 
       {templates.length === 0 ? (
         <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-border bg-card/50">

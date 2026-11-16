@@ -90,6 +90,12 @@ describe("findExistingContact", () => {
     expect(hit).toBeNull();
   });
 
+  it("prefers an exact formatted match and refuses ambiguous fuzzy matches", async () => {
+    const rows = [{ id: 'other', phone: '+44 1212 345678' }, { id: 'exact', phone: '+91 1212 345678' }];
+    expect((await findExistingContact(stubDb(rows), 'acct', '911212345678'))?.id).toBe('exact');
+    expect(await findExistingContact(stubDb(rows), 'acct', '331212345678')).toBeNull();
+  });
+
   it("returns null for an empty phone without querying", async () => {
     const db = stubDb([{ id: "c1", phone: "15551234567" }]);
     expect(await findExistingContact(db, "acct", "   ")).toBeNull();

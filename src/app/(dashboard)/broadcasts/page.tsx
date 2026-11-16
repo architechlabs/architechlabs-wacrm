@@ -19,6 +19,7 @@ import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
 import { GatedButton } from '@/components/ui/gated-button';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
 import { useTranslations } from 'next-intl';
+import { formatDisplayPhone } from '@/lib/whatsapp/phone-utils';
 
 /**
  * Poll cadence while any broadcast is sending. Kept modest so we don't
@@ -63,7 +64,8 @@ export default function BroadcastsPage() {
   const t = useTranslations('Broadcasts.page');
   const tStatus = useTranslations('Broadcasts.status');
   const canCreate = useCan('send-messages');
-  const { selectedId: whatsappConfigId, ready: lineReady } = useWhatsAppNumber();
+  const { numbers, ready: lineReady } = useWhatsAppNumber();
+  const [numberFilter, setNumberFilter] = useState('all');
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,17 +75,19 @@ export default function BroadcastsPage() {
 
   async function fetchBroadcasts() {
     try {
+      setError(null);
       const supabase = createClient();
-      if (!lineReady || !whatsappConfigId) {
+      if (!lineReady) {
         setBroadcasts([]);
         setLoading(false);
         return;
       }
-      const { data, error: fetchError } = await supabase
+      let query = supabase
         .from('broadcasts')
         .select('*')
-        .eq('whatsapp_config_id', whatsappConfigId)
         .order('created_at', { ascending: false });
+      if (numberFilter !== 'all') query = query.eq('whatsapp_config_id', numberFilter);
+      const { data, error: fetchError } = await query;
 
       if (fetchError) throw fetchError;
       setBroadcasts(data ?? []);
@@ -96,7 +100,7 @@ export default function BroadcastsPage() {
 
   useEffect(() => {
     fetchBroadcasts();
-  }, [lineReady, whatsappConfigId]);
+  }, [lineReady, numberFilter]);
 
   const anySending = useMemo(
     () => broadcasts.some((b) => b.status === 'sending'),
@@ -137,13 +141,14 @@ export default function BroadcastsPage() {
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [anySending]);
+  }, [anySending, lineReady, numberFilter]);
 
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
+
     );
   }
 
@@ -206,6 +211,13 @@ export default function BroadcastsPage() {
         </GatedButton>
       </div>
 
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">
+        From number
+        <select className="rounded-lg border border-border bg-card px-3 py-2 text-foreground" value={numberFilter} onChange={(event) => setNumberFilter(event.target.value)}>
+          <option value="all">All numbers</option>
+          {numbers.map((number) => <option key={number.id} value={number.id}>{number.display_phone_number ? formatDisplayPhone(number.display_phone_number) : number.verified_name || number.phone_number_id}</option>)}
+        </select>
+      </label>
       {broadcasts.length === 0 ? (
         <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-border bg-card">
           <Radio className="mb-3 h-10 w-10 text-muted-foreground" />
@@ -229,12 +241,14 @@ export default function BroadcastsPage() {
             <TableHeader>
               <TableRow className="border-border hover:bg-transparent">
                 <TableHead className="text-muted-foreground">{t('table.name')}</TableHead>
+                <TableHead className="text-muted-foreground">From</TableHead>
                 <TableHead className="hidden text-muted-foreground md:table-cell">{t('table.template')}</TableHead>
                 <TableHead className="hidden text-right text-muted-foreground sm:table-cell">
                   {t('table.recipients')}
                 </TableHead>
                 <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.delivery')}</TableHead>
                 <TableHead className="hidden text-muted-foreground lg:table-cell">{t('table.read')}</TableHead>
+                <TableHead className="text-muted-foreground">Sent / Failed</TableHead>
                 <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
                 <TableHead className="hidden text-muted-foreground sm:table-cell">{t('table.date')}</TableHead>
               </TableRow>
@@ -251,6 +265,7 @@ export default function BroadcastsPage() {
                     <TableCell className="font-medium text-foreground">
                       {broadcast.name}
                     </TableCell>
+                    <TableCell className="text-muted-foreground">{(() => { const number = numbers.find((item) => item.id === broadcast.whatsapp_config_id); return number?.display_phone_number ? formatDisplayPhone(number.display_phone_number) : number?.verified_name || 'Unknown'; })()}</TableCell>
                     <TableCell className="hidden text-muted-foreground md:table-cell">
                       {broadcast.template_name}
                     </TableCell>
@@ -258,6 +273,7 @@ export default function BroadcastsPage() {
                       {broadcast.total_recipients}
                     </TableCell>
                     <TableCell className="hidden lg:table-cell">
+                      <span className="text-xs text-muted-foreground">{broadcast.delivered_count} delivered</span>
                       <RateCell
                         value={broadcast.delivered_count}
                         total={broadcast.total_recipients}
@@ -265,12 +281,14 @@ export default function BroadcastsPage() {
                       />
                     </TableCell>
                     <TableCell className="hidden lg:table-cell">
+                      <span className="text-xs text-muted-foreground">{broadcast.read_count} read</span>
                       <RateCell
                         value={broadcast.read_count}
                         total={broadcast.total_recipients}
                         color="bg-blue-500"
                       />
                     </TableCell>
+                    <TableCell className="text-muted-foreground">{broadcast.sent_count} / {broadcast.failed_count}</TableCell>
                     <TableCell>
                       <span
                         className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium ${status.classes}`}

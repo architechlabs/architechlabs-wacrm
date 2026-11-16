@@ -14,6 +14,7 @@ import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
 import { Check } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { formatDisplayPhone } from '@/lib/whatsapp/phone-utils';
 
 const steps = [
   { label: 'template', key: 'template' },
@@ -26,8 +27,11 @@ export default function NewBroadcastPage() {
   const router = useRouter();
   const t = useTranslations('Broadcasts.new');
   const { accountId } = useAuth();
-  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
-  const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSending();
+  const { selectedId, numbers } = useWhatsAppNumber();
+  const [senderOverride, setWhatsappConfigId] = useState<string | null>(null);
+  const whatsappConfigId = senderOverride ?? selectedId;
+  const selectedNumber = numbers.find((number) => number.id === whatsappConfigId);
+  const { createAndSendBroadcast, isProcessing, progress } = useBroadcastSending(whatsappConfigId);
 
   const [currentStep, setCurrentStep] = useState(0);
   const [template, setTemplate] = useState<MessageTemplate | null>(null);
@@ -145,6 +149,13 @@ export default function NewBroadcastPage() {
           {t('subtitle')}
         </p>
       </div>
+      <div className="space-y-1.5">
+        <label htmlFor="broadcast-sender" className="text-sm font-medium">Send from</label>
+        <select id="broadcast-sender" value={whatsappConfigId ?? ''} disabled={isProcessing} onChange={(event) => { setWhatsappConfigId(event.target.value); setTemplate(null); }} className="block w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground">
+          <option value="" disabled>Select a WhatsApp number</option>
+          {numbers.map((number) => <option key={number.id} value={number.id}>{number.display_phone_number ? formatDisplayPhone(number.display_phone_number) : number.verified_name || number.phone_number_id}{number.display_phone_number && number.verified_name ? ` · ${number.verified_name}` : ''}</option>)}
+        </select>
+      </div>
 
       {/* Step Indicator */}
       <div className="flex items-center justify-between">
@@ -197,6 +208,7 @@ export default function NewBroadcastPage() {
         >
           {currentStep === 0 && (
             <Step1ChooseTemplate
+              wabaId={selectedNumber?.waba_id ?? null}
               selectedTemplate={template}
               onSelect={setTemplate}
               onNext={() => setCurrentStep(1)}
@@ -205,6 +217,7 @@ export default function NewBroadcastPage() {
           )}
           {currentStep === 1 && (
             <Step2SelectAudience
+              whatsappConfigId={whatsappConfigId}
               audience={audience}
               onUpdate={setAudience}
               onNext={() => setCurrentStep(2)}
@@ -224,6 +237,8 @@ export default function NewBroadcastPage() {
           )}
           {currentStep === 3 && template && (
             <Step4ScheduleSend
+              whatsappConfigId={whatsappConfigId}
+              senderLabel={selectedNumber?.display_phone_number ? formatDisplayPhone(selectedNumber.display_phone_number) : selectedNumber?.verified_name ?? 'selected number'}
               name={name}
               onNameChange={setName}
               template={template}

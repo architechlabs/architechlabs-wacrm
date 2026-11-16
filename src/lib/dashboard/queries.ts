@@ -2,10 +2,9 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   daysAgoStart,
   DOW_SHORT_MON_FIRST,
-  lastNDayKeys,
-  localDayKey,
   mondayIndex,
-  startOfLocalDay,
+  kolkataDayStart,
+  kolkataDayKey,
 } from './date-utils'
 import type {
   ActivityItem,
@@ -30,8 +29,8 @@ type DB = SupabaseClient
 // --- 1. Metric cards ---------------------------------------------------
 
 export async function loadMetrics(db: DB): Promise<MetricsBundle> {
-  const todayStart = startOfLocalDay().toISOString()
-  const yesterdayStart = daysAgoStart(1).toISOString()
+  const todayStart = kolkataDayStart().toISOString()
+  const yesterdayStart = kolkataDayStart(new Date(), 1).toISOString()
 
   const [
     openConvCur,
@@ -65,12 +64,14 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
     db
       .from('messages')
       .select('id', { count: 'exact', head: true })
-      .eq('sender_type', 'agent')
+      .in('sender_type', ['agent', 'bot'])
+      .in('status', ['sent', 'delivered', 'read'])
       .gte('created_at', todayStart),
     db
       .from('messages')
       .select('id', { count: 'exact', head: true })
-      .eq('sender_type', 'agent')
+      .in('sender_type', ['agent', 'bot'])
+      .in('status', ['sent', 'delivered', 'read'])
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
   ])
@@ -105,7 +106,7 @@ export async function loadConversationsSeries(
   db: DB,
   rangeDays: number,
 ): Promise<ConversationsSeriesPoint[]> {
-  const start = daysAgoStart(rangeDays - 1).toISOString()
+  const start = kolkataDayStart(new Date(), rangeDays - 1).toISOString()
   const { data, error } = await db
     .from('messages')
     .select('created_at, sender_type')
@@ -113,12 +114,12 @@ export async function loadConversationsSeries(
     .order('created_at', { ascending: true })
   if (error) throw error
 
-  const keys = lastNDayKeys(rangeDays)
+  const keys = Array.from({ length: rangeDays }, (_, index) => kolkataDayKey(kolkataDayStart(new Date(), rangeDays - index - 1)))
   const buckets = new Map<string, { incoming: number; outgoing: number }>()
   for (const k of keys) buckets.set(k, { incoming: 0, outgoing: 0 })
 
   for (const row of (data ?? []) as { created_at: string; sender_type: string }[]) {
-    const key = localDayKey(row.created_at)
+    const key = kolkataDayKey(row.created_at)
     const bucket = buckets.get(key)
     if (!bucket) continue
     if (row.sender_type === 'customer') bucket.incoming += 1

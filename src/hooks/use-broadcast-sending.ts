@@ -1,13 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
-import { useWhatsAppNumber } from '@/hooks/use-whatsapp-number';
-import {
-  BATCH_SEND_ATTEMPTS,
-  batchRetryDelayMs,
-} from '@/lib/broadcast-retry';
 import { Contact, MessageTemplate } from '@/types';
 
 export type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -84,6 +79,7 @@ interface BroadcastApiResult {
   status: 'sent' | 'failed';
   whatsapp_message_id?: string;
   error?: string;
+  error_code?: number;
 }
 
 /** contactId → (customFieldId → value). */
@@ -157,11 +153,11 @@ async function fetchCustomValueIndex(
   return index;
 }
 
-export function useBroadcastSending(): UseBroadcastSendingReturn {
+export function useBroadcastSending(whatsappConfigId: string | null): UseBroadcastSendingReturn {
   const { accountId } = useAuth();
-  const { selectedId: whatsappConfigId } = useWhatsAppNumber();
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const launchKey = useRef<string | null>(null);
 
   async function resolveAudience(audience: AudienceConfig): Promise<Contact[]> {
     const supabase = createClient();
@@ -333,12 +329,14 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
     const { data, error } = await supabase
       .from('contacts')
       .select('*')
+      .eq('whatsapp_config_id', whatsappConfigId ?? '')
       .in('id', contactIds);
     if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
     return data ?? [];
   }
 
   async function createAndSendBroadcast(payload: BroadcastPayload): Promise<string> {
+    launchKey.current ??= crypto.randomUUID();
     setIsProcessing(true);
     setProgress(0);
 
@@ -376,6 +374,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         .insert({
           user_id: user.id,
           account_id: accountId,
+          idempotency_key: launchKey.current,
           whatsapp_config_id: whatsappConfigId,
           name: payload.name,
           template_name: payload.template.name,
@@ -431,6 +430,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         broadcast_id: broadcast.id,
         contact_id: contact.id,
         status: 'pending' as const,
+        phone_e164: `+${contact.phone.replace(/\D/g, '')}`,
         template_params: paramsByContact.get(contact.id) ?? [],
       }));
 
@@ -469,7 +469,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         throw new Error('Failed to fetch broadcast recipients');
       }
 
-      let failedCount = 0;
       const totalRecipients = recipients.length;
 
       // Media-header templates (image/video/document) require a media
@@ -491,6 +490,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
         const apiRecipients = batch
           .filter((r) => r.contact?.phone)
           .map((r) => ({
+            recipient_id: r.id,
             phone: r.contact!.phone as string,
             // Read back off the row rather than re-resolved, so this
             // pass and any later resume send identical params.
@@ -498,15 +498,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
             ...(messageParams ? { messageParams } : {}),
           }));
 
-        if (apiRecipients.length === 0) continue;
+        if (apiRecipients.length !== batch.length) throw new Error('A recipient has no phone number.');
 
         try {
-          // Send the batch, waiting out a 429 rather than writing the
-          // whole batch off as failed. Only 429 is replayed — see
-          // batchRetryDelayMs for why nothing else can be.
-          let data: { error?: string; results?: BroadcastApiResult[] } = {};
-          for (let attempt = 1; ; attempt++) {
-            const res = await fetch('/api/whatsapp/broadcast', {
+          const res = await fetch('/api/whatsapp/broadcast', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -514,75 +509,17 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
                 template_name: payload.template.name,
                 template_language: payload.template.language ?? 'en_US',
                 whatsapp_config_id: whatsappConfigId,
+                broadcast_id: broadcast.id,
               }),
-            });
+          });
+          const data: { error?: string; results?: BroadcastApiResult[]; stopped?: boolean } = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Broadcast API request failed');
 
-            data = await res.json();
-            if (res.ok) break;
-
-            const retryIn =
-              attempt < BATCH_SEND_ATTEMPTS
-                ? batchRetryDelayMs(res.status, res.headers.get('Retry-After'))
-                : null;
-            if (retryIn === null) {
-              throw new Error(data.error || 'Broadcast API request failed');
-            }
-            await sleep(retryIn);
-          }
-
-          const resultsByPhone = new Map<string, BroadcastApiResult>();
-          for (const r of (data.results ?? []) as BroadcastApiResult[]) {
-            resultsByPhone.set(r.phone, r);
-          }
-
-          for (const recipient of batch) {
-            const phone = recipient.contact?.phone;
-            const result = phone ? resultsByPhone.get(phone) : undefined;
-
-            if (!result) {
-              failedCount++;
-              await supabase
-                .from('broadcast_recipients')
-                .update({
-                  status: 'failed',
-                  error_message: 'No phone number on contact',
-                })
-                .eq('id', recipient.id);
-              continue;
-            }
-
-            if (result.status === 'sent') {
-              await supabase
-                .from('broadcast_recipients')
-                .update({
-                  status: 'sent',
-                  sent_at: new Date().toISOString(),
-                  whatsapp_message_id: result.whatsapp_message_id ?? null,
-                  error_message: null,
-                })
-                .eq('id', recipient.id);
-            } else {
-              failedCount++;
-              await supabase
-                .from('broadcast_recipients')
-                .update({
-                  status: 'failed',
-                  error_message: result.error ?? 'Unknown error',
-                })
-                .eq('id', recipient.id);
-            }
-          }
+          if (data.stopped) throw new Error('Meta paused the broadcast after a rate, limit or quality error.');
         } catch (err) {
-          for (const recipient of batch) {
-            failedCount++;
-            await supabase
-              .from('broadcast_recipients')
-              .update({
-                status: 'failed',
-                error_message: err instanceof Error ? err.message : 'Unknown error',
-              })
-              .eq('id', recipient.id);
-          }
+          // The response can be lost after Meta accepted a message. Do not
+          // retry or claim the batch failed when its outcome is unknown.
+          throw new Error(`Broadcast stopped; check recipient status before any further action. ${err instanceof Error ? err.message : ''}`);
         }
 
         const progressPct =
@@ -598,11 +535,6 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       // Aggregate counts are maintained by the DB trigger (migration
       // 003); we only flip the final status here.
       setProgress(95);
-      const finalStatus = failedCount === totalRecipients ? 'failed' : 'sent';
-      await supabase
-        .from('broadcasts')
-        .update({ status: finalStatus })
-        .eq('id', broadcast.id);
 
       setProgress(100);
       return broadcast.id;

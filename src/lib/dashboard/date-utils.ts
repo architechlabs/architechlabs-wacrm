@@ -9,6 +9,18 @@ export function startOfLocalDay(d: Date = new Date()): Date {
   return out
 }
 
+/** Midnight in Asia/Kolkata, represented as an absolute instant. */
+export function kolkataDayStart(d: Date = new Date(), daysAgo = 0): Date {
+  const offset = 330 * 60_000;
+  const day = 24 * 60 * 60_000;
+  return new Date(Math.floor((d.getTime() + offset) / day) * day - offset - daysAgo * day);
+}
+
+export function kolkataDayKey(value: Date | string): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  return new Date(date.getTime() + 330 * 60_000).toISOString().slice(0, 10);
+}
+
 export function daysAgoStart(days: number): Date {
   const out = startOfLocalDay()
   out.setDate(out.getDate() - days)

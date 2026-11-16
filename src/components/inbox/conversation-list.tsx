@@ -50,7 +50,7 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 
 
 
-type InboxFilter = ConversationStatus | "all" | "unread";
+type InboxFilter = ConversationStatus | "all" | "unread" | "awaiting_reply";
 type InboxTag = Pick<Tag, "id" | "name" | "color">;
 
 export function ConversationList({
@@ -68,6 +68,7 @@ export function ConversationList({
   const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(() => [
     { label: t("filterAll"), value: "all" },
     { label: t("filterUnread"), value: "unread" },
+    { label: "No reply · 24h+", value: "awaiting_reply" },
     { label: t("filterOpen"), value: "open" },
     { label: t("filterPending"), value: "pending" },
     { label: t("filterClosed"), value: "closed" },
@@ -78,6 +79,33 @@ export function ConversationList({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [retryRead, setRetryRead] = useState(0);
+  const [awaitingReply, setAwaitingReply] = useState<Record<string, string>>({});
+  const [awaitingError, setAwaitingError] = useState(false);
+  const conversationVersion = conversations.map((c) => `${c.id}:${c.last_message_at ?? ''}`).join('|');
+
+  useEffect(() => {
+    if (!lineReady || !whatsappConfigId) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await readWithTimeout(signal => supabase
+          .rpc('get_inbox_awaiting_reply', { p_whatsapp_config_id: whatsappConfigId })
+          .abortSignal(signal), controller.signal);
+        if (error) throw error;
+        if (!cancelled) {
+          setAwaitingReply(Object.fromEntries((data ?? []).map((row: { conversation_id: string; last_outbound_at: string }) => [row.conversation_id, row.last_outbound_at])));
+          setAwaitingError(false);
+        }
+      } catch {
+        if (!cancelled) { setAwaitingReply({}); setAwaitingError(true); }
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 60_000);
+    return () => { cancelled = true; controller.abort(); clearInterval(timer); };
+  }, [conversationVersion, lineReady, whatsappConfigId, resyncToken]);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
   // Broadcast audience filtering. Company is an exact match on the field.
@@ -186,6 +214,8 @@ export function ConversationList({
 
     if (filter === "unread") {
       result = result.filter((c) => c.unread_count > 0);
+    } else if (filter === "awaiting_reply") {
+      result = result.filter((c) => Boolean(awaitingReply[c.id]));
     } else if (filter !== "all") {
       result = result.filter((c) => c.status === filter);
     }
@@ -211,7 +241,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, search, selectedTagIds, selectedCompany]);
+  }, [conversations, filter, search, selectedTagIds, selectedCompany, awaitingReply]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -438,6 +468,7 @@ export function ConversationList({
             <Button variant="outline" size="sm" onClick={() => setRetryRead(n => n + 1)}>Retry</Button>
           </div>
         )}
+        {awaitingError && <p role="alert" className="p-3 text-xs text-muted-foreground">Could not check conversations awaiting a reply.</p>}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -454,6 +485,7 @@ export function ConversationList({
                 conversation={conv}
                 isActive={conv.id === activeConversationId}
                 onSelect={handleSelect}
+                awaitingSince={awaitingReply[conv.id]}
                 t={t}
               />
             ))}
@@ -469,6 +501,7 @@ interface ConversationItemProps {
   isActive: boolean;
   onSelect: (conversation: Conversation) => void;
   t: ReturnType<typeof useTranslations>;
+  awaitingSince?: string;
 }
 
 function ConversationItem({
@@ -476,6 +509,7 @@ function ConversationItem({
   isActive,
   onSelect,
   t,
+  awaitingSince,
 }: ConversationItemProps) {
   const contact = conversation.contact;
   const displayName = contact?.name || contact?.phone || t("unknown");
@@ -539,6 +573,7 @@ function ConversationItem({
             />
           </div>
         </div>
+        {awaitingSince && <p className="mt-1 text-[11px] text-amber-400">No reply · {formatDistanceToNow(new Date(awaitingSince))}</p>}
       </div>
     </button>
   );

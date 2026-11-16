@@ -39,7 +39,7 @@ export class WacrmClient {
   private async request<T>(
     method: string,
     path: string,
-    options: { query?: Record<string, string | number | undefined>; body?: unknown } = {},
+    options: { query?: Record<string, string | number | undefined>; body?: unknown; idempotencyKey?: string } = {},
   ): Promise<{ data: T; meta?: { next_cursor: string | null } }> {
     const url = new URL(`${this.baseUrl}/api/v1${path}`);
     if (options.query) {
@@ -57,6 +57,7 @@ export class WacrmClient {
     if (options.body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
+    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
     let res: Response;
     try {
@@ -169,8 +170,12 @@ export class WacrmClient {
 
   // --- Broadcasts ---------------------------------------------------
 
-  sendBroadcast(body: unknown): Promise<{ data: unknown }> {
-    return this.request('POST', '/broadcasts', { body });
+  sendBroadcast(body: unknown, idempotencyKey?: string): Promise<{ data: unknown }> {
+    return this.request('POST', '/broadcasts', { body, idempotencyKey });
+  }
+
+  continueBroadcast(id: string): Promise<{ data: unknown }> {
+    return this.request('POST', `/broadcasts/${encodeURIComponent(id)}/continue`);
   }
 
   getBroadcast(id: string): Promise<{ data: unknown }> {

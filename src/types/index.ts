@@ -239,6 +239,8 @@ export interface Message {
    */
   media_type?: string | null;
   template_name?: string;
+  broadcast_id?: string | null;
+  broadcast?: { name: string } | null;
   message_id?: string;
   /** Client-generated idempotency key for initiated template sends. */
   client_request_id?: string;
@@ -453,6 +455,7 @@ export interface BroadcastRecipient {
   read_at?: string;
   replied_at?: string;
   error_message?: string;
+  delivery_outcome?: string | null;
   error_code?: number | null;
   /**
    * Meta's message id, persisted when the broadcast send succeeds so

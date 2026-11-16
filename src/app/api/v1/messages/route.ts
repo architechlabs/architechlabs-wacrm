@@ -102,7 +102,10 @@ export async function POST(request: Request) {
       ctx.supabase,
       ctx.accountId,
       to,
-      typeof body.name === 'string' ? body.name : null
+      typeof body.name === 'string' ? body.name : null,
+      null,
+      null,
+      typeof body.whatsapp_config_id === 'string' ? body.whatsapp_config_id : null,
     );
 
     const result = await sendMessageToConversation(

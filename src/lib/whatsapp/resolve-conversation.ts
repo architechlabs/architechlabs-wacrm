@@ -47,7 +47,8 @@ export async function resolveConversationByPhone(
   phone: string,
   name?: string | null,
   auditUserId?: string | null,
-  preferredContactId?: string | null
+  preferredContactId?: string | null,
+  whatsappConfigId?: string | null,
 ): Promise<ResolvedConversation> {
   const sanitized = sanitizePhoneForMeta(phone);
   if (!isValidE164(sanitized)) {
@@ -60,7 +61,7 @@ export async function resolveConversationByPhone(
 
   // Fail fast (and create nothing) when the account has no WhatsApp
   // connected — the same error the send would raise anyway.
-  const config = await resolveWhatsAppConfig(db, { accountId }).catch(() => null);
+  const config = await resolveWhatsAppConfig(db, { accountId, configId: whatsappConfigId }).catch(() => null);
   if (!config) {
     throw new SendMessageError(
       'whatsapp_not_configured',

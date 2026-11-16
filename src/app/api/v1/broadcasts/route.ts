@@ -42,6 +42,8 @@ import {
   deliverBroadcast,
   BroadcastError,
 } from '@/lib/whatsapp/broadcast-core';
+import { claimBroadcastDelivery, releaseBroadcastDelivery } from '@/lib/whatsapp/broadcast-resume';
+import { continueBroadcastAutomatically } from '@/lib/whatsapp/broadcast-continuation';
 
 export async function POST(request: Request) {
   try {
@@ -63,11 +65,13 @@ export async function POST(request: Request) {
 
     const plan = await createBroadcast(ctx.supabase, ctx.accountId, auditUserId, {
       name: typeof body.name === 'string' ? body.name : null,
+      idempotencyKey: request.headers.get('Idempotency-Key') || crypto.randomUUID(),
       templateName,
       templateLanguage:
         typeof body.template_language === 'string'
           ? body.template_language
           : null,
+      whatsappConfigId: typeof body.whatsapp_config_id === 'string' ? body.whatsapp_config_id : null,
       recipients: recipients.map((r) => ({
         to: typeof r?.to === 'string' ? r.to : '',
         params: Array.isArray(r?.params) ? r.params : undefined,
@@ -77,7 +81,14 @@ export async function POST(request: Request) {
     // Fan out after the response is sent. Uses the same service-role
     // client — no request-scoped auth needed for the Meta calls or
     // the account-scoped row updates.
-    after(() => deliverBroadcast(ctx.supabase, plan));
+    if (!await claimBroadcastDelivery(ctx.supabase, ctx.accountId, plan.broadcastId)) {
+      return fail('busy', 'Broadcast created but could not start delivery', 409);
+    }
+    after(async () => {
+      try { await deliverBroadcast(ctx.supabase, { ...plan, planned: plan.planned.slice(0, 10) }); }
+      finally { await releaseBroadcastDelivery(ctx.supabase, plan.broadcastId); }
+      await continueBroadcastAutomatically(ctx.supabase, ctx.accountId, plan.broadcastId, request.url, request.headers.get('authorization'));
+    });
 
     return ok(
       {

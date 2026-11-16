@@ -131,6 +131,7 @@ function planDb(fx: PlanFixture, writes: PlanWrites = {}): SupabaseClient {
       const b: Record<string, unknown> = {
         select: () => b,
         eq: () => b,
+        is: () => b,
         order: () => b,
         in: (col: string, vals: unknown) => {
           if (col === 'status') writes.statusFilter = vals;

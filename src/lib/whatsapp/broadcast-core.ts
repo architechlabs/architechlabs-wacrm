@@ -18,18 +18,18 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { sendTemplateMessage } from '@/lib/whatsapp/meta-api';
+import { MetaApiError, sendTemplateMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveWhatsAppConfig, WhatsAppConfigLookupError } from '@/lib/whatsapp/resolve-config';
 import {
   sanitizePhoneForMeta,
   isValidE164,
-  phoneVariants,
-  isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
+import { finishBroadcastMessage, reserveBroadcastMessage } from '@/lib/whatsapp/broadcast-message';
+import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder';
 
 /** Thrown by createBroadcast on a caller-visible failure; route maps it. */
 export class BroadcastError extends Error {
@@ -51,6 +51,7 @@ export interface BroadcastRecipientInput {
 }
 
 export interface CreateBroadcastParams {
+  idempotencyKey?: string | null;
   name?: string | null;
   templateName: string;
   templateLanguage?: string | null;
@@ -63,9 +64,13 @@ interface PlannedRecipient {
   recipientRowId: string;
   phone: string;
   params: string[];
+  messageParams?: SendTimeParams;
 }
 
 export interface BroadcastPlan {
+  accountId?: string;
+  auditUserId?: string;
+  configId?: string;
   broadcastId: string;
   templateName: string;
   templateLanguage: string;
@@ -92,6 +97,10 @@ export async function createBroadcast(
   params: CreateBroadcastParams
 ): Promise<BroadcastPlan> {
   const { name, templateName, recipients } = params;
+
+  if (!params.idempotencyKey?.trim() || params.idempotencyKey.length > 200) {
+    throw new BroadcastError('bad_request', 'A valid Idempotency-Key header is required', 400);
+  }
 
   if (!templateName) {
     throw new BroadcastError('bad_request', "'template_name' is required", 400);
@@ -144,7 +153,8 @@ export async function createBroadcast(
     db,
     accountId,
     templateName,
-    params.templateLanguage
+    params.templateLanguage,
+    config.waba_id,
   );
   if (resolvedTemplate.malformed) {
     throw new BroadcastError(
@@ -213,22 +223,24 @@ export async function createBroadcast(
   // delivery plan (issue #370). The function body is atomic, so a recipient
   // failure now rolls the parent back and nothing orphaned survives.
   const { data: createdRows, error: createErr } = await db.rpc(
-    'create_broadcast_with_recipients',
+    'create_broadcast_idempotent',
     {
       p_account_id: accountId,
       p_user_id: auditUserId,
       p_name: name || `API broadcast (${templateName})`,
       p_template_name: templateName,
       p_template_language: resolvedTemplate.language,
-      p_total_recipients: deduped.length,
       p_contact_ids: deduped.map((r) => r.contactId),
+      p_phones: deduped.map((r) => `+${r.phone}`),
       // Frozen per-recipient params (migration 038) — without them a
       // resume of this broadcast has no way to reconstruct {{1}}.
       p_template_params: deduped.map((r) => r.params),
       p_whatsapp_config_id: config.id ?? null,
+      p_idempotency_key: params.idempotencyKey.trim(),
     }
   );
   if (createErr || !createdRows || createdRows.length === 0) {
+    if (createErr?.code === '23505') throw new BroadcastError('duplicate_launch', 'This idempotency key has already been used', 409);
     console.error('[broadcast-core] create broadcast error:', createErr);
     throw new BroadcastError('internal', 'Failed to create broadcast', 500);
   }
@@ -246,6 +258,9 @@ export async function createBroadcast(
   );
 
   return {
+    accountId,
+    auditUserId,
+    configId: config.id,
     broadcastId,
     templateName,
     templateLanguage: resolvedTemplate.language,
@@ -275,31 +290,63 @@ export async function deliverBroadcast(
   plan: BroadcastPlan
 ): Promise<void> {
   for (const recipient of plan.planned) {
-    const variants = phoneVariants(recipient.phone);
+    const result = await deliverBroadcastRecipient(db, plan, recipient);
+    if (result.errorCode && [131048, 131056, 130429, 131049].includes(result.errorCode)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  await finalizeBroadcastStatus(db, plan.broadcastId);
+}
+
+export async function deliverBroadcastRecipient(
+  db: SupabaseClient,
+  plan: BroadcastPlan,
+  recipient: PlannedRecipient,
+): Promise<{ status: 'sent' | 'failed' | 'skipped_opt_out' | 'unavailable'; messageId?: string; error?: string; errorCode?: number }> {
+    if (!plan.accountId) throw new Error('Broadcast account is required');
+    const { data: claimed, error: claimError } = await db.rpc('claim_broadcast_recipient', {
+      p_account_id: plan.accountId,
+      p_broadcast_id: plan.broadcastId,
+      p_recipient_id: recipient.recipientRowId,
+    });
+    if (claimError) throw new Error('Could not claim broadcast recipient');
+    if (claimed === 'skipped_opt_out') return { status: 'skipped_opt_out' };
+    if (claimed !== 'claimed') return { status: 'unavailable' };
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
+    let errorCode: number | undefined;
+    let reservation: Awaited<ReturnType<typeof reserveBroadcastMessage>> | null = null;
 
-    for (const variant of variants) {
+    if (!plan.auditUserId || !plan.configId) throw new Error('Broadcast sender is required');
+    try {
+      reservation = await reserveBroadcastMessage(db, {
+        accountId: plan.accountId, userId: plan.auditUserId, configId: plan.configId,
+        broadcastId: plan.broadcastId, phone: recipient.phone, templateName: plan.templateName,
+        template: plan.templateRow, params: recipient.params, messageParams: recipient.messageParams,
+      });
+    } catch {
+      await db.from('broadcast_recipients').update({ status: 'failed', error_message: 'Could not prepare inbox message; nothing was sent.' }).eq('id', recipient.recipientRowId);
+      return { status: 'failed', error: 'Could not prepare inbox message; nothing was sent.' };
+    }
+
       try {
         const result = await sendTemplateMessage({
           phoneNumberId: plan.phoneNumberId,
           accessToken: plan.accessToken,
-          to: variant,
+          to: recipient.phone,
           templateName: plan.templateName,
           language: plan.templateLanguage,
           template: plan.templateRow ?? undefined,
           params: recipient.params,
+          messageParams: recipient.messageParams,
         });
         sentMessageId = result.messageId;
         lastError = null;
-        break;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
         lastError = message;
-        // Only a "recipient not allowed" error is worth another variant.
-        if (!isRecipientNotAllowedError(message)) break;
+        if (error instanceof MetaApiError) errorCode = error.code;
       }
-    }
 
     if (sentMessageId) {
       await db
@@ -311,18 +358,37 @@ export async function deliverBroadcast(
           error_message: null,
         })
         .eq('id', recipient.recipientRowId);
+      if (reservation) {
+        try {
+          await finishBroadcastMessage(db, reservation, sentMessageId, plan.templateName);
+        } catch (error) {
+          // Meta has already accepted this message. Never mark it failed or
+          // resend it just because the inbox write failed.
+          console.error('[broadcast-core] inbox persistence failed:', error instanceof Error ? error.message : 'Unknown error');
+          await db.from('broadcast_recipients').update({ error_message: 'Accepted by Meta, but inbox recording failed; reconcile without resending.' })
+            .eq('id', recipient.recipientRowId);
+        }
+      }
     } else {
+      if (reservation && errorCode) {
+        await db.from('messages').update({ status: 'failed', failure_code: errorCode, failure_reason: lastError }).eq('id', reservation.id);
+      }
       await db
         .from('broadcast_recipients')
         .update({
           status: 'failed',
           error_message: lastError || 'Unknown error',
+          error_code: errorCode ?? null,
         })
         .eq('id', recipient.recipientRowId);
     }
-  }
-
-  await finalizeBroadcastStatus(db, plan.broadcastId);
+    if (errorCode && [131048, 131056, 130429, 131049].includes(errorCode)) {
+      await db.from('broadcasts').update({ delivery_paused_at: new Date().toISOString() })
+        .eq('id', plan.broadcastId).eq('account_id', plan.accountId);
+    }
+    return sentMessageId
+      ? { status: 'sent', messageId: sentMessageId }
+      : { status: 'failed', error: lastError ?? 'Unknown error', errorCode };
 }
 
 /**

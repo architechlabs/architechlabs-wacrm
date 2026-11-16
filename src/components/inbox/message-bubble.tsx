@@ -208,7 +208,7 @@ function MessageContent({
             )}
           >
             <LayoutTemplate className="h-3 w-3" />
-            {t("template")}
+            {message.broadcast_id ? `Broadcast${message.broadcast?.name ? ` · ${message.broadcast.name}` : ''}` : t("template")}
           </span>
           {message.content_text ? (
             <p className="mt-1 whitespace-pre-wrap break-words text-sm">
