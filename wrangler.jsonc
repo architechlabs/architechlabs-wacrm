@@ -3,7 +3,7 @@
   "name": "architech-wacrm",
   // Architech Labs WACRM only — do not deploy with a token from another account.
   "account_id": "f8fcf42a91f7fbf1cb89022ead312069",
-  "main": ".open-next/worker.js",
+  "main": "broadcast-worker.mjs",
   "workers_dev": true,
   "routes": [
     {
@@ -20,8 +20,13 @@
     "ADMIN_DOCUMENT_DELIVERY_ACCOUNT_ID": "90e47f37-19d5-4fb8-94f8-8c2df7599f7e",
   },
   "queues": {
-    "producers": [{ "binding": "ADMIN_DOCUMENT_QUEUE", "queue": "architech-admin-documents" }],
+    "producers": [
+      { "binding": "ADMIN_DOCUMENT_QUEUE", "queue": "architech-admin-documents" },
+      { "binding": "BROADCAST_QUEUE", "queue": "architech-broadcasts" }
+    ],
+    "consumers": [{ "queue": "architech-broadcasts", "max_batch_size": 1, "max_batch_timeout": 1 }]
   },
+  "triggers": { "crons": ["*/2 * * * *"] },
   "compatibility_date": "2026-08-15",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {

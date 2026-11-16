@@ -64,23 +64,8 @@ interface UseBroadcastSendingReturn {
  * send is ~100 calls over several minutes, and a bucket sized for
  * "one call per campaign" throttles most of it away (issue #472).
  */
-const SEND_BATCH_SIZE = 10;
-const SEND_BATCH_DELAY_MS = 1000;
-
 /** `broadcast_recipients` inserts are independent of the send rate. */
 const INSERT_BATCH_SIZE = 200;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-interface BroadcastApiResult {
-  phone: string;
-  status: 'sent' | 'failed';
-  whatsapp_message_id?: string;
-  error?: string;
-  error_code?: number;
-}
 
 /** contactId → (customFieldId → value). */
 type CustomValueIndex = Map<string, Map<string, string>>;
@@ -380,13 +365,14 @@ export function useBroadcastSending(whatsappConfigId: string | null): UseBroadca
           template_name: payload.template.name,
           template_language: payload.template.language ?? 'en_US',
           template_variables: payload.variables,
+          message_params: payload.headerMediaUrl?.trim() ? { headerMediaUrl: payload.headerMediaUrl.trim() } : null,
           audience_filter: {
             type: payload.audience.type,
             tagIds: payload.audience.tagIds,
             customField: payload.audience.customField,
             excludeTagIds: payload.audience.excludeTagIds,
           },
-          status: 'sending',
+          status: 'draft',
           total_recipients: contacts.length,
           sent_count: 0,
           delivered_count: 0,
@@ -459,83 +445,13 @@ export function useBroadcastSending(whatsappConfigId: string | null): UseBroadca
       }
 
       // ── Step 4: Fetch recipients back (joined contact) ────────────
-      setProgress(30);
-      const { data: recipients, error: recipientsFetchError } = await supabase
-        .from('broadcast_recipients')
-        .select('*, contact:contacts(*)')
-        .eq('broadcast_id', broadcast.id);
-
-      if (recipientsFetchError || !recipients) {
-        throw new Error('Failed to fetch broadcast recipients');
-      }
-
-      const totalRecipients = recipients.length;
-
-      // Media-header templates (image/video/document) require a media
-      // URL on every send. Collected in the personalize step and applied
-      // to all recipients; falls back to the template's stored URL on the
-      // server when omitted.
-      const headerType = payload.template.header_type;
-      const isMediaHeader =
-        headerType === 'image' ||
-        headerType === 'video' ||
-        headerType === 'document';
-      const headerMediaUrl = payload.headerMediaUrl?.trim();
-      const messageParams =
-        isMediaHeader && headerMediaUrl ? { headerMediaUrl } : undefined;
-
-      for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
-        const batch = recipients.slice(i, i + SEND_BATCH_SIZE);
-
-        const apiRecipients = batch
-          .filter((r) => r.contact?.phone)
-          .map((r) => ({
-            recipient_id: r.id,
-            phone: r.contact!.phone as string,
-            // Read back off the row rather than re-resolved, so this
-            // pass and any later resume send identical params.
-            params: Array.isArray(r.template_params) ? r.template_params : [],
-            ...(messageParams ? { messageParams } : {}),
-          }));
-
-        if (apiRecipients.length !== batch.length) throw new Error('A recipient has no phone number.');
-
-        try {
-          const res = await fetch('/api/whatsapp/broadcast', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                recipients: apiRecipients,
-                template_name: payload.template.name,
-                template_language: payload.template.language ?? 'en_US',
-                whatsapp_config_id: whatsappConfigId,
-                broadcast_id: broadcast.id,
-              }),
-          });
-          const data: { error?: string; results?: BroadcastApiResult[]; stopped?: boolean } = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Broadcast API request failed');
-
-          if (data.stopped) throw new Error('Meta paused the broadcast after a rate, limit or quality error.');
-        } catch (err) {
-          // The response can be lost after Meta accepted a message. Do not
-          // retry or claim the batch failed when its outcome is unknown.
-          throw new Error(`Broadcast stopped; check recipient status before any further action. ${err instanceof Error ? err.message : ''}`);
-        }
-
-        const progressPct =
-          30 + Math.round(((i + batch.length) / totalRecipients) * 60);
-        setProgress(progressPct);
-
-        if (i + SEND_BATCH_SIZE < recipients.length) {
-          await sleep(SEND_BATCH_DELAY_MS);
-        }
-      }
-
-      // ── Step 5: Finalize status ───────────────────────────────────
-      // Aggregate counts are maintained by the DB trigger (migration
-      // 003); we only flip the final status here.
-      setProgress(95);
-
+      const { error: startError } = await supabase.from('broadcasts').update({ status: 'sending' }).eq('id', broadcast.id);
+      if (startError) throw new Error('Could not start broadcast');
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcast.id}/resume`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope: 'pending' }),
+      });
+      const data: { error?: string } = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not queue broadcast');
       setProgress(100);
       return broadcast.id;
     } finally {

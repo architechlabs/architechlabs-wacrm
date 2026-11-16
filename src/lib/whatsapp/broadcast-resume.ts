@@ -23,6 +23,7 @@ import { decrypt } from '@/lib/whatsapp/encryption';
 import { resolveWhatsAppConfig, WhatsAppConfigLookupError } from '@/lib/whatsapp/resolve-config';
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
+import type { SendTimeParams } from '@/lib/whatsapp/template-send-builder';
 
 /** Which recipients a resume pass picks up. */
 export type ResumeScope = 'pending' | 'failed' | 'all';
@@ -49,7 +50,18 @@ export const RESUME_MAX_PER_REQUEST = 10;
  * stolen from, short enough that a crashed one doesn't wedge the
  * campaign until someone touches the database.
  */
-export const DELIVERY_LOCK_STALE_MS = 30 * 60 * 1000;
+export const DELIVERY_LOCK_STALE_MS = 2 * 60 * 1000;
+
+/** Refresh only the lease owned by this worker; the returned timestamp is the new token. */
+export async function heartbeatBroadcastDelivery(
+  db: SupabaseClient, accountId: string, broadcastId: string, token: string, now = new Date(),
+): Promise<string | null> {
+  const next = now.toISOString();
+  const { data, error } = await db.from('broadcasts').update({ delivery_locked_at: next })
+    .eq('id', broadcastId).eq('account_id', accountId).eq('delivery_locked_at', token).select('id');
+  if (error) throw new Error('Could not refresh broadcast lease');
+  return data?.length ? next : null;
+}
 
 function scopeStatuses(scope: ResumeScope): string[] {
   if (scope === 'pending') return ['pending'];
@@ -150,7 +162,7 @@ export async function planBroadcastResume(
 ): Promise<ResumePlan> {
   const { data: broadcast, error: bcError } = await db
     .from('broadcasts')
-    .select('id, template_name, template_language, whatsapp_config_id, delivery_paused_at, delivery_pause_reason')
+    .select('id, template_name, template_language, whatsapp_config_id, delivery_paused_at, delivery_pause_reason, message_params')
     .eq('id', broadcastId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -286,6 +298,7 @@ export async function planBroadcastResume(
       params: Array.isArray(row.template_params)
         ? row.template_params.filter((p): p is string => typeof p === 'string')
         : [],
+      ...(broadcast.message_params ? { messageParams: broadcast.message_params as SendTimeParams } : {}),
     })),
     rejected: 0,
   };

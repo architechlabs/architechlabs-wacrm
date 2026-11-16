@@ -345,6 +345,8 @@ import {
 } from './template-send-builder'
 
 export interface SendTemplateMessageArgs {
+  /** Optional bounded request deadline for background delivery. */
+  signal?: AbortSignal
   phoneNumberId: string
   accessToken: string
   to: string
@@ -399,6 +401,7 @@ export async function sendTemplateMessage(
     template,
     messageParams,
     contextMessageId,
+    signal,
   } = args
   const url = `${graphApiBase()}/${phoneNumberId}/messages`
 
@@ -443,6 +446,8 @@ export async function sendTemplateMessage(
 
   const response = await fetch(url, {
     method: 'POST',
+    signal,
+    ...(signal ? { redirect: 'error' as const } : {}),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,

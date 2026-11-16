@@ -16,7 +16,7 @@ describe('external message log migration', () => {
         INSERT INTO broadcasts VALUES ('00000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002');
         INSERT INTO broadcast_recipients(broadcast_id,contact_id,status) VALUES ('00000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000004','pending');
       `);
-      await db.exec(await readFile('supabase/migrations/056_external_message_log.sql', 'utf8'));
+      await db.exec(await readFile('supabase/migrations/059_external_message_log.sql', 'utf8'));
       const params = ['00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000004','wamid.test','template','Hello Alice','welcome','sent','2026-01-01T00:00:00Z',null,'00000000-0000-0000-0000-000000000005'];
       const query = 'SELECT * FROM log_external_message($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)';
       const first = await db.query<{ message_id: string; duplicate: boolean }>(query, params);
@@ -35,7 +35,7 @@ describe('external message log migration', () => {
     const db = new PGlite();
     try {
       await db.exec("CREATE TABLE messages(message_id text); INSERT INTO messages VALUES ('wamid.same'),('wamid.same')");
-      await expect(db.exec(await readFile('supabase/migrations/056_external_message_log.sql', 'utf8'))).rejects.toThrow('Duplicate message_id');
+      await expect(db.exec(await readFile('supabase/migrations/059_external_message_log.sql', 'utf8'))).rejects.toThrow('Duplicate message_id');
       expect((await db.query('SELECT message_id FROM messages')).rows).toHaveLength(2);
     } finally { await db.close(); }
   });

@@ -85,10 +85,10 @@ describe('claimBroadcastDelivery', () => {
       'bc-1',
       new Date('2026-08-11T12:00:00Z'),
     );
-    // 30 minutes before "now" — a pass whose process died is recoverable
+    // Two minutes before "now" - a pass whose process died is recoverable
     // without touching the database by hand.
     expect(calls[0].or).toBe(
-      'delivery_locked_at.is.null,delivery_locked_at.lt.2026-08-11T11:30:00.000Z',
+      'delivery_locked_at.is.null,delivery_locked_at.lt.2026-08-11T11:58:00.000Z',
     );
   });
 
