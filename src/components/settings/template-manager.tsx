@@ -128,7 +128,7 @@ function emptyButton(type: TemplateButton['type']): TemplateButton {
 export function TemplateManager() {
   const t = useTranslations('Settings.templates');
   const supabase = createClient();
-  const { user, loading: authLoading } = useAuth();
+  const { user, accountId, loading: authLoading } = useAuth();
   const { selected, selectedId } = useWhatsAppNumber();
 
   const [loading, setLoading] = useState(true);
@@ -136,6 +136,7 @@ export function TemplateManager() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncErrors, setSyncErrors] = useState<{ name: string; language: string; message: string }[]>([]);
   const [form, setForm] = useState<TemplateFormData>(emptyForm);
   // Non-null when the dialog is editing an existing row — switches the
   // submit handler from POST /submit to PATCH /[id] and changes the
@@ -181,21 +182,21 @@ export function TemplateManager() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!user || !accountId) {
       setLoading(false);
       return;
     }
-    fetchTemplates(user.id);
+    fetchTemplates(accountId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user?.id]);
+  }, [authLoading, user?.id, accountId, selectedId]);
 
-  async function fetchTemplates(userId: string) {
+  async function fetchTemplates(accountId: string) {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('message_templates')
         .select('*')
-        .eq('user_id', userId)
+        .eq('account_id', accountId)
         .order('created_at', { ascending: false });
       if (error) throw error;
       const wabaId = selected?.waba_id;
@@ -284,7 +285,7 @@ export function TemplateManager() {
       }
       // Refresh first, then close — re-opening the dialog
       // immediately should not show a stale list.
-      if (user) await fetchTemplates(user.id);
+      if (accountId) await fetchTemplates(accountId);
       toast.success(
         data.dry_run
           ? isEdit
@@ -306,8 +307,9 @@ export function TemplateManager() {
   }
 
   async function handleSyncFromMeta() {
-    if (!user) return;
+    if (!user || !accountId) return;
     setSyncing(true);
+    setSyncErrors([]);
     try {
       const res = await fetch('/api/whatsapp/templates/sync', {
         method: 'POST',
@@ -318,20 +320,19 @@ export function TemplateManager() {
       if (!res.ok) {
         throw new Error(data?.error || `Sync failed (HTTP ${res.status})`);
       }
-      toast.success(
+      if (data.success && !data.truncated) toast.success(
         t('toastSyncCount', { total: data.total }) +
           (data.inserted || data.updated
             ? t('toastSyncDetails', { inserted: data.inserted, updated: data.updated })
             : ''),
       );
       if (Array.isArray(data.errors) && data.errors.length > 0) {
-        const preview = data.errors.slice(0, 3).map(
+        setSyncErrors(data.errors);
+        const preview = data.errors.map(
           (e: { name: string; language: string; message: string }) =>
             `${e.name} (${e.language})`,
         );
-        const suffix =
-          data.errors.length > 3 ? `, +${data.errors.length - 3} more` : '';
-        toast.error(t('toastSyncFailed', { preview: preview.join(', ') + suffix }));
+        toast.error(t('toastSyncFailed', { preview: preview.join(', ') }));
       }
       if (data.truncated) {
         // Use error (not warning) so the message survives long
@@ -342,10 +343,12 @@ export function TemplateManager() {
           { duration: 10000 },
         );
       }
-      await fetchTemplates(user.id);
+      await fetchTemplates(accountId);
     } catch (err) {
       console.error('Template sync error:', err);
-      toast.error(err instanceof Error ? err.message : t('toastSyncError'));
+      const message = err instanceof Error ? err.message : t('toastSyncError');
+      setSyncErrors([{ name: 'Sync', language: '', message }]);
+      toast.error(message);
     } finally {
       setSyncing(false);
     }
@@ -512,6 +515,8 @@ export function TemplateManager() {
           </div>
         }
       />
+
+      {syncErrors.length > 0 && <ul role="alert" className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-red-900/40 bg-red-950/20 p-3 text-xs text-red-400">{syncErrors.map((item, index) => <li key={`${item.name}-${item.language}-${index}`}>{item.name}{item.language ? ` (${item.language})` : ''}: {item.message}</li>)}</ul>}
 
       {templates.length === 0 ? (
         <Card>

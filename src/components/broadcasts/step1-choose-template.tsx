@@ -8,6 +8,7 @@ import { Loader2, FileText, ArrowRight } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/hooks/use-auth';
 import { readWithTimeout } from '@/lib/http/read-with-timeout';
+import { toast } from 'sonner';
 
 const templateCache = new Map<string, { expires: number; templates: MessageTemplate[] }>();
 const CACHE_TTL_MS = 60_000;
@@ -35,6 +36,7 @@ export function Step1ChooseTemplate({ whatsappConfigId, wabaId, selectedTemplate
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [syncing, setSyncing] = useState(false);
+  const [syncErrors, setSyncErrors] = useState<{ name: string; language: string; message: string }[]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -87,6 +89,7 @@ export function Step1ChooseTemplate({ whatsappConfigId, wabaId, selectedTemplate
     if (!whatsappConfigId || syncing) return;
     setSyncing(true);
     setError(null);
+    setSyncErrors([]);
     try {
       const response = await fetch('/api/whatsapp/templates/sync', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -95,13 +98,16 @@ export function Step1ChooseTemplate({ whatsappConfigId, wabaId, selectedTemplate
       });
       const result = await response.json();
       if (!response.ok || !result.success || result.truncated) {
-        const detail = Array.isArray(result.errors) ? result.errors.slice(0, 3).map((item: { name: string; language: string; message: string }) => `${item.name} (${item.language}): ${item.message}`).join('; ') : '';
-        throw new Error(result.error || detail || 'Template sync was incomplete. Please try again.');
+        const details = Array.isArray(result.errors) ? result.errors : [];
+        setSyncErrors(details);
+        throw new Error(result.error || (details.length ? `Could not sync ${details.length} template(s).` : 'Template sync was incomplete. Please try again.'));
       }
       if (accountId && wabaId) templateCache.delete(`${accountId}:${wabaId}`);
       setRefresh((value) => value + 1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not sync templates from Meta.');
+      const message = err instanceof Error ? err.message : 'Could not sync templates from Meta.';
+      setError(message);
+      toast.error(message);
     } finally { setSyncing(false); }
   }
 
@@ -115,8 +121,9 @@ export function Step1ChooseTemplate({ whatsappConfigId, wabaId, selectedTemplate
 
   if (error) {
     return (
-      <div className="flex h-64 flex-col items-center justify-center gap-2">
-        <p className="text-sm text-red-400">{error}</p>
+      <div className="flex min-h-64 flex-col items-center justify-center gap-2">
+        <p role="alert" className="text-sm text-red-400">{error}</p>
+        {syncErrors.length > 0 && <ul className="max-h-64 w-full space-y-1 overflow-y-auto text-xs text-red-400">{syncErrors.map((item, index) => <li key={`${item.name}-${item.language}-${index}`}>{item.name} ({item.language}): {item.message}</li>)}</ul>}
         <Button variant="outline" onClick={refreshTemplates} disabled={syncing || !whatsappConfigId}>{syncing ? 'Syncing…' : 'Retry sync'}</Button>
       </div>
     );

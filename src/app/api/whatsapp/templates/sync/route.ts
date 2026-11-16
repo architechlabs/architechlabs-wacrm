@@ -132,7 +132,7 @@ export async function POST(request: Request) {
     // settings-class data: `canEditSettings` and the message_templates
     // insert/update RLS policies (migration 017) both require 'admin'.
     // Resolving account_id off the profile only proved membership.
-    const { supabase, accountId, userId } = await requireRole('admin')
+    const { supabase, accountId } = await requireRole('admin')
 
     let configId: string | null = null
     try {
@@ -250,56 +250,24 @@ export async function POST(request: Request) {
         updated_at: new Date().toISOString(),
       }
 
-      const { data: existing, error: lookupErr } = await supabase
-        .from('message_templates')
-        .select('id')
-        .eq('account_id', accountId)
-        .eq('waba_id', config.waba_id)
-        .eq('name', t.name)
-        .eq('language', t.language)
-        .maybeSingle()
-
-      if (lookupErr) {
+      const { data: synced, error: syncError } = await supabase.rpc('sync_waba_template', {
+        p_config_id: config.id,
+        p_template: row,
+      })
+      if (syncError || !Array.isArray(synced) || synced.length !== 1) {
         errors.push({
           name: t.name,
           language: t.language,
-          message: lookupErr.message,
+          message: syncError?.message || 'Template sync returned no result',
         })
         continue
       }
-
-      if (existing?.id) {
-        const { error: updErr } = await supabase
-          .from('message_templates')
-          .update(row)
-          .eq('id', existing.id)
-        if (updErr) {
-          errors.push({
-            name: t.name,
-            language: t.language,
-            message: updErr.message,
-          })
-        } else {
-          updated++
-        }
-      } else {
-        const { error: insErr } = await supabase
-          .from('message_templates')
-          .insert({ ...row, user_id: userId })
-        if (insErr) {
-          errors.push({
-            name: t.name,
-            language: t.language,
-            message: insErr.message,
-          })
-        } else {
-          inserted++
-        }
-      }
+      if (synced[0].was_inserted) inserted++
+      else updated++
     }
 
     return NextResponse.json({
-      success: errors.length === 0,
+      success: errors.length === 0 && !(pageCount >= PAGE_CAP && nextUrl !== null),
       total: metaTemplates.length,
       inserted,
       updated,
